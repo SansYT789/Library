@@ -13,7 +13,9 @@ local WALK_RADIUS = 50
 
 local lastPos = root.Position
 local stuckTime = 0
+local moving = false
 
+-- Random point quanh camera
 local function getRandomPoint()
 	local base = workspace.CurrentCamera.CFrame.Position
 	local offset = Vector3.new(
@@ -24,40 +26,50 @@ local function getRandomPoint()
 	return base + offset
 end
 
+-- Đi tới 1 điểm bằng pathfinding
 local function moveToPoint(destination)
 	local path = PathfindingService:CreatePath()
 	path:ComputeAsync(root.Position, destination)
 
 	if path.Status == Enum.PathStatus.Complete then
 		local waypoints = path:GetWaypoints()
+		moving = true
 		for _, waypoint in ipairs(waypoints) do
 			humanoid:MoveTo(waypoint.Position)
-			humanoid.MoveToFinished:Wait()
+			local reached = humanoid.MoveToFinished:Wait()
+			if not reached then break end
 		end
+		moving = false
 	else
+		-- nếu fail thì TP nhẹ
 		root.CFrame = CFrame.new(destination + Vector3.new(0, 3, 0))
 	end
 end
 
+-- Loop chính
 task.spawn(function()
-	while task.wait(0.5) do
-		-- Check stuck
+	while task.wait(0.2) do
+		-- check stuck
 		local dist = (root.Position - lastPos).Magnitude
 		if dist < 1 then
-			stuckTime = stuckTime + 0.5
+			stuckTime = stuckTime + 0.2
 			if stuckTime >= STUCK_TIMEOUT then
-				print("⚠️ Stuck → move slightly...")
+				print("⚠️ Stuck → teleport nhẹ...")
 				root.CFrame = root.CFrame + Vector3.new(TELEPORT_DISTANCE, 3, 0)
 				stuckTime = 0
+				moving = false
 			end
 		else
 			stuckTime = 0
 		end
 		lastPos = root.Position
 
-		if humanoid.MoveToFinished or dist < 3 then
+		-- nếu không di chuyển thì chọn điểm mới
+		if not moving then
 			local newPoint = getRandomPoint()
-			moveToPoint(newPoint)
+			task.spawn(function()
+				moveToPoint(newPoint)
+			end)
 		end
 	end
 end)
