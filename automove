@@ -1,16 +1,20 @@
+-- Services
 local Players = game:GetService("Players")
 local PathfindingService = game:GetService("PathfindingService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
+-- Người chơi & humanoid
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
+-- Map boundary (tùy chỉnh map)
 local MAP_MIN = Vector3.new(-200,0,-200)
 local MAP_MAX = Vector3.new(200,0,200)
 
+-- Lấy danh sách player khác
 local function getOtherPlayers()
     local list = {}
     for _, p in ipairs(Players:GetPlayers()) do
@@ -21,28 +25,36 @@ local function getOtherPlayers()
     return list
 end
 
+-- Lấy random point trên map, raycast xuống đất
 local function getRandomPoint()
     local x = math.random(MAP_MIN.X, MAP_MAX.X)
     local z = math.random(MAP_MIN.Z, MAP_MAX.Z)
-    local ray = Ray.new(Vector3.new(x,500,z), Vector3.new(0,-1000,0))
-    local hit, pos = Workspace:FindPartOnRayWithIgnoreList(ray, {character})
-    if hit then
-        return pos + Vector3.new(0,2,0)
+    local origin = Vector3.new(x, 200, z) -- bắn ray từ trên cao xuống
+    local direction = Vector3.new(0, -500, 0)
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {character}
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+
+    local result = Workspace:Raycast(origin, direction, rayParams)
+    if result then
+        return result.Position + Vector3.new(0, 2, 0)
     else
-        return Vector3.new(x,5,z)
+        return Vector3.new(x, 5, z)
     end
 end
 
+-- Né player khác
 local function avoidPlayers(targetPos)
-    local others = getOtherPlayers()
-    for _, part in ipairs(others) do
-        if (part.Position - targetPos).magnitude < 10 then
-            targetPos = targetPos + Vector3.new(math.random(-10,10),0,math.random(-10,10))
+    for _, part in ipairs(getOtherPlayers()) do
+        if (part.Position - targetPos).Magnitude < 10 then
+            targetPos = targetPos + Vector3.new(math.random(-10,10), 0, math.random(-10,10))
         end
     end
     return targetPos
 end
 
+-- Move tới target an toàn, smooth, tránh stuck
 local function moveTo(targetPos)
     targetPos = avoidPlayers(targetPos)
 
@@ -55,14 +67,15 @@ local function moveTo(targetPos)
     })
 
     path:ComputeAsync(rootPart.Position, targetPos)
-    path:MoveTo(character)
+    local waypoints = path:GetWaypoints()
+    if #waypoints == 0 then return end
 
     local lastPos = rootPart.Position
     local stuckTime = 0
-
     local conn
+
     conn = RunService.RenderStepped:Connect(function(delta)
-        if (rootPart.Position - lastPos).magnitude < 0.05 then
+        if (rootPart.Position - lastPos).Magnitude < 0.05 then
             stuckTime = stuckTime + delta
         else
             stuckTime = 0
@@ -70,20 +83,34 @@ local function moveTo(targetPos)
         lastPos = rootPart.Position
 
         if stuckTime > 2 then
-            rootPart.CFrame = CFrame.new(targetPos + Vector3.new(0,5,0))
+            rootPart.CFrame = CFrame.new(targetPos + Vector3.new(0, 5, 0))
             humanoid.Jump = true
             stuckTime = 0
         end
     end)
 
-    path.MoveToFinished:Wait()
+    -- Đi qua từng waypoint
+    for _, waypoint in ipairs(waypoints) do
+        humanoid:MoveTo(waypoint.Position)
+
+        if waypoint.Action == Enum.PathWaypointAction.Jump then
+            humanoid.Jump = true
+        end
+
+        local reached = humanoid.MoveToFinished:Wait()
+        if not reached then
+            break
+        end
+    end
+
     conn:Disconnect()
 end
 
-spawn(function()
+-- Loop di chuyển random liên tục
+task.spawn(function()
     while true do
         local point = getRandomPoint()
         moveTo(point)
-        wait(math.random(0.3,1))
+        task.wait(math.random(0.3, 1))
     end
 end)
