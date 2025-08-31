@@ -1,9 +1,6 @@
 -- ===============================
--- 🦅 AFK Bot + Rayfield UI + Dance + Hello + Adjustable WalkRange
+-- 🦅 AFK Bot Headless (No UI)
 -- ===============================
-
---// Load Rayfield
-local Rayfield = loadstring(game:HttpGet('https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua'))()
 
 --// Services
 local Players = game:GetService("Players")
@@ -37,7 +34,7 @@ local Config = {
         AgentMaxSlope = 45,
     },
     PathRetryDelay = 2,
-    BlockedPathTTL = 60 * 2,
+    BlockedPathTTL = 120,
     MaxBlockedEntries = 100,
     CheckBlockedEvery = 30,
     StuckTeleportTries = 12,
@@ -214,9 +211,9 @@ task.spawn(function()
 end)
 
 -- Auto reply
-_G.AutoReplyEnabled=true
+local _AutoReplyEnabled = true
 local function autoReplyNo(player,msg)
-    if not _G.AutoReplyEnabled then return end
+    if not _AutoReplyEnabled then return end
     for _,k in ipairs(AutoReplyKeywords) do
         if string.find(string.lower(msg),k) then
             local plrChar=player.Character
@@ -246,58 +243,10 @@ Players.PlayerAdded:Connect(function(plr)
 end)
 
 -- ==========================
--- Rayfield UI
--- ==========================
-local Window=Rayfield:CreateWindow({
-    Name="AFK Bot",
-    LoadingTitle="Red AFK Bot Loading...",
-    LoadingSubtitle="GenZ Mode ON 😎",
-    ConfigurationSaving={Enabled=true,FolderName="RedAFKBot",FileName="Config"}
-})
-task.wait(0.1) -- đảm bảo window fully loaded
-
-local MainTab = Window:CreateTab("Main")
-
--- Toggles & Sliders
-local AutoWalkToggle=MainTab:CreateToggle({
-    Name="Auto Walk",
-    CurrentValue=true,
-    Flag="RedAutoWalkToggle",
-    Callback=function(value) _G.AutoWalkEnabled=value end
-})
-_G.AutoWalkEnabled=true
-
-local WalkRangeSlider=MainTab:CreateSlider({
-    Name="Walk Range",
-    Range={30,150},
-    Increment=1,
-    Suffix="studs",
-    CurrentValue=Config.WalkRange,
-    Flag="RedWalkRangeSlider",
-    Callback=function(value) Config.WalkRange=value end
-})
-
-local AutoReplyToggle=MainTab:CreateToggle({
-    Name="Auto Reply",
-    CurrentValue=true,
-    Flag="RedAutoReplyToggle",
-    Callback=function(value) _G.AutoReplyEnabled=value end
-})
-
-local HelloToggle=MainTab:CreateToggle({
-    Name="Random Hello Player",
-    CurrentValue=true,
-    Flag="RedHelloToggle",
-    Callback=function(value) _G.HelloEnabled=value end
-})
-_G.HelloEnabled=true
-
--- ==========================
--- Main auto-walk loop
+-- Main auto-walk loop (headless)
 -- ==========================
 task.spawn(function()
     while task.wait(0.2) do
-        if not _G.AutoWalkEnabled then continue end
         if Humanoid.Sit and Config.JumpWhenSit then Humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end
         local didHandle=handleObstacleInFront()
         if didHandle then task.wait(0.3); continue end
@@ -319,12 +268,9 @@ task.spawn(function()
     end
 end)
 
--- ==========================
--- Random hello player occasionally
--- ==========================
+-- Random hello to nearby players
 task.spawn(function()
     while task.wait(60) do
-        if not _G.AutoWalkEnabled or not _G.HelloEnabled then continue end
         if math.random()<0.3 then
             local otherPlayers={}
             for _,plr in ipairs(Players:GetPlayers()) do
@@ -345,9 +291,7 @@ task.spawn(function()
     end
 end)
 
--- ==========================
 -- Cleanup expired blocked paths
--- ==========================
 task.spawn(function()
     while task.wait(60) do
         for key,entry in pairs(BlockedPaths) do
