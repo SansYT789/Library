@@ -7,7 +7,7 @@ local Players = game:GetService("Players")
 local PathfindingService = game:GetService("PathfindingService")
 local Workspace = workspace
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ChatService = game:GetService("Chat")
+local TextChatService = game:GetService("TextChatService")
 
 --// Player references
 local LocalPlayer = Players.LocalPlayer
@@ -49,6 +49,26 @@ local AutoReplyMessages = {"no","nah","sorry","nope","not giving"}
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Blacklist
 rayParams.FilterDescendantsInstances = {Character}
+
+-- Send message (universal)
+local function SendMessage(msg)
+    -- TextChatService (new)
+    local channel = TextChatService:FindFirstChild("TextChannels")
+        and TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+    if channel and channel.SendAsync then
+        channel:SendAsync(msg)
+        return
+    end
+
+    -- Legacy
+    local defaultChat = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+    if defaultChat and defaultChat:FindFirstChild("SayMessageRequest") then
+        defaultChat.SayMessageRequest:FireServer(msg, "All")
+        return
+    end
+
+    warn("Không tìm thấy chat system để gửi tin nhắn!")
+end
 
 -- Helper functions
 local function vec3Key(v)
@@ -111,7 +131,7 @@ local function computeAndFollowPath(targetPos)
     if isBlocked(targetPos) then return false,"blocked" end
     local path = PathfindingService:CreatePath(Config.PathAgent)
     path:ComputeAsync(HRP.Position,targetPos)
-    if path.Status==Enum.PathStatus.Success or path.Status==Enum.PathStatus.Complete then
+    if path.Status == Enum.PathStatus.Success then
         for _,wp in ipairs(path:GetWaypoints()) do
             if isBlocked(wp.Position) then addBlockedPath(wp.Position); return false,"blocked_waypoint" end
             Humanoid:MoveTo(wp.Position)
@@ -120,7 +140,9 @@ local function computeAndFollowPath(targetPos)
             if not ok then addBlockedPath(wp.Position); return false,"move_failed" end
         end
         return true,"arrived"
-    else addBlockedPath(targetPos); return false,"compute_failed" end
+    else 
+        addBlockedPath(targetPos); return false,"compute_failed" 
+    end
 end
 
 local function tryAlternateThenPath(targetPos)
@@ -194,8 +216,7 @@ task.spawn(function()
     while task.wait(math.random(Config.IdleDanceTimeRange[1],Config.IdleDanceTimeRange[2])) do
         if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
             local danceNum=math.random(1,4)
-            ReplicatedStorage:WaitForChild("DefaultChatSystemChatEvents")
-                .SayMessageRequest:FireServer("/e dance"..danceNum,"All")
+            SendMessage("/e dance"..danceNum)
         end
     end
 end)
@@ -225,10 +246,8 @@ local function autoReplyNo(player,msg)
                 else Humanoid:MoveTo(HRP.Position+Vector3.new(math.random(-10,10),0,math.random(-10,10))) end
             end
             if math.random()<0.3 then task.delay(math.random(1,4),function()
-                if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Head") then
-                    local reply=AutoReplyMessages[math.random(1,#AutoReplyMessages)]
-                    ChatService:Chat(LocalPlayer.Character.Head,reply,Enum.ChatColor.Red)
-                end
+                local reply=AutoReplyMessages[math.random(1,#AutoReplyMessages)]
+                SendMessage(reply)
             end) end
             break
         end
@@ -283,8 +302,7 @@ task.spawn(function()
                 local targetPos=targetPlr.Character.HumanoidRootPart.Position-(targetPlr.Character.HumanoidRootPart.CFrame.LookVector*2)
                 if tryAlternateThenPath(targetPos) then
                     task.wait(0.5)
-                    ReplicatedStorage:WaitForChild("DefaultChatSystemChatEvents")
-                        .SayMessageRequest:FireServer("/e hello","All")
+                    SendMessage("/e hello")
                 end
             end
         end
