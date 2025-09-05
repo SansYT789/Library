@@ -16,12 +16,18 @@ local function updateSavePath()
     savePath = cleanBasePath .. "/" .. gameName .. ".json"
 end
 
--- Helper function to create directory structure
+-- Improved helper function to create directory structure
 local function ensureDirectoryExists()
     -- Split path and create nested folders
     local pathParts = {}
     for part in basePath:gmatch("[^/]+") do
-        table.insert(pathParts, part)
+        if part ~= "" then -- Skip empty parts
+            table.insert(pathParts, part)
+        end
+    end
+    
+    if #pathParts == 0 then
+        return -- No folders to create
     end
     
     local currentPath = ""
@@ -32,10 +38,23 @@ local function ensureDirectoryExists()
             currentPath = currentPath .. "/" .. part
         end
         
+        -- Debug print to see what folders we're trying to create
+        print("SaveLib: Checking folder: " .. currentPath)
+        
         if not isfolder(currentPath) then
-            makefolder(currentPath)
+            print("SaveLib: Creating folder: " .. currentPath)
+            local success, err = pcall(function()
+                makefolder(currentPath)
+            end)
+            if not success then
+                warn("SaveLib: Failed to create folder '" .. currentPath .. "' - " .. tostring(err))
+                return false
+            end
+        else
+            print("SaveLib: Folder already exists: " .. currentPath)
         end
     end
+    return true
 end
 
 -- Initialize path on load
@@ -43,6 +62,7 @@ updateSavePath()
 
 function SaveLib:Load()
     updateSavePath() -- Ensure path is current
+    ensureDirectoryExists() -- Create folders if they don't exist
     
     if isfile(savePath) then
         local content = readfile(savePath)
@@ -73,7 +93,9 @@ function SaveLib:Save(data)
         error("SaveLib: Failed to encode data to JSON")
     end
     
-    ensureDirectoryExists()
+    if not ensureDirectoryExists() then
+        error("SaveLib: Failed to create required directories")
+    end
     
     local writeSuccess, writeError = pcall(function()
         writefile(savePath, json)
@@ -143,6 +165,7 @@ function SaveLib:SetNewPath(path)
     -- Clean the path - remove trailing slashes and invalid characters
     basePath = path:gsub("\\", "/"):gsub("/+$", ""):gsub("[<>:\"|?*]", "")
     updateSavePath()
+    print("SaveLib: New path set to: " .. basePath)
 end
 
 function SaveLib:SetNewGameName(name)
@@ -153,6 +176,7 @@ function SaveLib:SetNewGameName(name)
         gameName = "default"
     end
     updateSavePath()
+    print("SaveLib: New game name set to: " .. gameName)
 end
 
 function SaveLib:GetCurrentPath()
@@ -160,57 +184,103 @@ function SaveLib:GetCurrentPath()
     return savePath
 end
 
+function SaveLib:GetBasePath()
+    return basePath
+end
+
+-- Method to manually create folders
+function SaveLib:CreateFolders()
+    return ensureDirectoryExists()
+end
+
 -- Init with auto-save via getgenv()
 function SaveLib:Init()
+    print("SaveLib: Initializing...")
+    print("SaveLib: Base path: " .. basePath)
+    print("SaveLib: Game name: " .. gameName)
+    
+    -- Ensure folders exist before doing anything else
+    updateSavePath()
+    print("SaveLib: Full save path: " .. savePath)
+    
+    local folderSuccess = ensureDirectoryExists()
+    if not folderSuccess then
+        warn("SaveLib: Failed to create directories during initialization")
+    end
+    
+    -- Load data
     self:Load()
     local lib = self
+    local env = getgenv()
 
     -- Store original metatable if it exists
-    local originalMT = getmetatable(getgenv())
-    local originalNewIndex = originalMT and originalMT.__newindex
-    local originalIndex = originalMT and originalMT.__index
-
-    setmetatable(getgenv(), {
+    local originalMT = getmetatable(env)
+    
+    -- Remove existing metatable temporarily to avoid conflicts
+    setmetatable(env, nil)
+    
+    -- Populate getgenv() with cached values first
+    for k, v in pairs(cache) do
+        env[k] = v
+    end
+    
+    -- Set up new metatable
+    setmetatable(env, {
         __newindex = function(t, k, v)
-            -- Call original newindex if it exists
-            if originalNewIndex then
-                originalNewIndex(t, k, v)
-            else
-                rawset(t, k, v)
-            end
+            -- Always use rawset to avoid recursive calls
+            rawset(t, k, v)
             
             -- Update our cache
             cache[k] = v
             if autoSave then
-                local success, error = pcall(function()
+                local success, err = pcall(function()
                     lib:Save(cache)
                 end)
                 if not success then
-                    warn("SaveLib: Auto-save failed - " .. tostring(error))
+                    warn("SaveLib: Auto-save failed - " .. tostring(err))
                 end
             end
         end,
         __index = function(t, k)
-            -- Check our cache first
+            -- First check if key exists in the table itself
+            local rawValue = rawget(t, k)
+            if rawValue ~= nil then
+                return rawValue
+            end
+            
+            -- Then check our cache
             if cache[k] ~= nil then
                 return cache[k]
             end
             
-            -- Fall back to original index or rawget
-            if originalIndex then
-                return originalIndex(t, k)
-            else
-                return rawget(t, k)
-            end
+            -- Return nil if not found anywhere
+            return nil
         end
     })
-
-    -- Populate getgenv() with cached values
-    for k, v in pairs(cache) do
-        rawset(getgenv(), k, v)
-    end
+    
+    -- Test save to ensure everything is working
+    pcall(function()
+        lib:Save(cache)
+    end)
     
     print("SaveLib: Initialized with path: " .. self:GetCurrentPath())
+end
+
+-- Simple init without metatable
+function SaveLib:InitSimple()
+    print("SaveLib: Simple initialization...")
+    print("SaveLib: Base path: " .. basePath)
+    print("SaveLib: Game name: " .. gameName)
+    
+    self:Load()
+    
+    -- Simply populate getgenv() with cached values
+    for k, v in pairs(cache) do
+        getgenv()[k] = v
+    end
+    
+    print("SaveLib: Simple init completed with path: " .. self:GetCurrentPath())
+    print("SaveLib: Use SaveLib:Set(key, value) to save data")
 end
 
 return SaveLib
