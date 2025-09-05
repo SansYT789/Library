@@ -8,28 +8,33 @@ local gameName = tostring(game.PlaceId)
 local savePath = ""
 local autoSave = true
 local cache = {}
+local isInitialized = false
+local foldersCreated = false
 
 -- Helper function to ensure path ends without slash and create proper file path
 local function updateSavePath()
-    -- Remove trailing slash if present
     local cleanBasePath = basePath:gsub("/$", "")
     savePath = cleanBasePath .. "/" .. gameName .. ".json"
 end
 
 -- Improved helper function to create directory structure
 local function ensureDirectoryExists()
-    -- Split path and create nested folders
+    if foldersCreated then
+        return true -- Already created, don't try again
+    end
+    
     local pathParts = {}
     for part in basePath:gmatch("[^/]+") do
-        if part ~= "" then -- Skip empty parts
+        if part ~= "" then
             table.insert(pathParts, part)
         end
     end
-    
+
     if #pathParts == 0 then
-        return -- No folders to create
+        foldersCreated = true
+        return true
     end
-    
+
     local currentPath = ""
     for i, part in ipairs(pathParts) do
         if i == 1 then
@@ -37,12 +42,8 @@ local function ensureDirectoryExists()
         else
             currentPath = currentPath .. "/" .. part
         end
-        
-        -- Debug print to see what folders we're trying to create
-        print("SaveLib: Checking folder: " .. currentPath)
-        
+
         if not isfolder(currentPath) then
-            print("SaveLib: Creating folder: " .. currentPath)
             local success, err = pcall(function()
                 makefolder(currentPath)
             end)
@@ -50,10 +51,10 @@ local function ensureDirectoryExists()
                 warn("SaveLib: Failed to create folder '" .. currentPath .. "' - " .. tostring(err))
                 return false
             end
-        else
-            print("SaveLib: Folder already exists: " .. currentPath)
         end
     end
+    
+    foldersCreated = true
     return true
 end
 
@@ -61,56 +62,75 @@ end
 updateSavePath()
 
 function SaveLib:Load()
-    updateSavePath() -- Ensure path is current
-    ensureDirectoryExists() -- Create folders if they don't exist
+    updateSavePath()
     
+    -- Only create folders if not already created
+    if not foldersCreated then
+        ensureDirectoryExists()
+    end
+
     if isfile(savePath) then
-        local content = readfile(savePath)
-        local success, data = pcall(function()
+        local success, content = pcall(readfile, savePath)
+        if not success then
+            warn("SaveLib: Failed to read file - " .. tostring(content))
+            cache = {}
+            return cache
+        end
+        
+        local decodeSuccess, data = pcall(function()
             return HttpService:JSONDecode(content)
         end)
-        if success and type(data) == "table" then
+        
+        if decodeSuccess and type(data) == "table" then
             cache = data
             return data
         else
             warn("SaveLib: Failed to decode JSON data, using empty cache")
         end
     end
+    
     cache = {}
     return cache
 end
 
 function SaveLib:Save(data)
-    assert(type(data) == "table", "Data must be a table")
-    
-    updateSavePath() -- Ensure path is current
-    
+    if type(data) ~= "table" then
+        warn("SaveLib: Data must be a table, got " .. type(data))
+        return false
+    end
+
+    updateSavePath()
+
     local success, json = pcall(function()
         return HttpService:JSONEncode(data)
     end)
-    
+
     if not success then
-        error("SaveLib: Failed to encode data to JSON")
+        warn("SaveLib: Failed to encode data to JSON - " .. tostring(json))
+        return false
     end
-    
+
     if not ensureDirectoryExists() then
-        error("SaveLib: Failed to create required directories")
+        warn("SaveLib: Failed to create required directories")
+        return false
     end
-    
+
     local writeSuccess, writeError = pcall(function()
         writefile(savePath, json)
     end)
-    
+
     if not writeSuccess then
-        error("SaveLib: Failed to write file - " .. tostring(writeError))
+        warn("SaveLib: Failed to write file - " .. tostring(writeError))
+        return false
     end
-    
-    cache = data -- Update cache after successful save
+
+    cache = data
+    return true
 end
 
 function SaveLib:Clear()
     updateSavePath()
-    
+
     if isfile(savePath) then
         local success, error = pcall(function()
             delfile(savePath)
@@ -133,15 +153,21 @@ end
 
 function SaveLib:Set(key, value)
     cache[key] = value
-    if autoSave then
-        self:Save(cache)
+    if autoSave and isInitialized then
+        local success = self:Save(cache)
+        if not success then
+            warn("SaveLib: Failed to auto-save data for key: " .. tostring(key))
+        end
     end
 end
 
 function SaveLib:Reset()
     cache = {}
-    if autoSave then
-        self:Save(cache)
+    if autoSave and isInitialized then
+        local success = self:Save(cache)
+        if not success then
+            warn("SaveLib: Failed to save reset data")
+        end
     end
 end
 
@@ -150,33 +176,44 @@ function SaveLib:Append(key, value)
         cache[key] = {}
     end
     table.insert(cache[key], value)
-    if autoSave then
-        self:Save(cache)
+    if autoSave and isInitialized then
+        local success = self:Save(cache)
+        if not success then
+            warn("SaveLib: Failed to save appended data for key: " .. tostring(key))
+        end
     end
 end
 
 function SaveLib:SetAutoSave(state)
-    assert(type(state) == "boolean", "State must be true/false")
+    if type(state) ~= "boolean" then
+        warn("SaveLib: SetAutoSave state must be true/false, got " .. type(state))
+        return
+    end
     autoSave = state
 end
 
 function SaveLib:SetNewPath(path)
-    assert(type(path) == "string", "Path must be a string")
-    -- Clean the path - remove trailing slashes and invalid characters
+    if type(path) ~= "string" then
+        warn("SaveLib: Path must be a string, got " .. type(path))
+        return
+    end
+    
     basePath = path:gsub("\\", "/"):gsub("/+$", ""):gsub("[<>:\"|?*]", "")
+    foldersCreated = false -- Reset folder creation flag
     updateSavePath()
-    print("SaveLib: New path set to: " .. basePath)
 end
 
 function SaveLib:SetNewGameName(name)
-    assert(type(name) == "string", "Name must be a string")
-    -- More comprehensive sanitization for filename
-    gameName = name:gsub("[<>:\"/\\|?*%c]", ""):gsub("^%s*(.-)%s*$", "%1") -- Remove invalid chars and trim
+    if type(name) ~= "string" then
+        warn("SaveLib: Name must be a string, got " .. type(name))
+        return
+    end
+    
+    gameName = name:gsub("[<>:\"/\\|?*%c]", ""):gsub("^%s*(.-)%s*$", "%1")
     if gameName == "" then
         gameName = "default"
     end
     updateSavePath()
-    print("SaveLib: New game name set to: " .. gameName)
 end
 
 function SaveLib:GetCurrentPath()
@@ -188,99 +225,92 @@ function SaveLib:GetBasePath()
     return basePath
 end
 
--- Method to manually create folders
 function SaveLib:CreateFolders()
+    foldersCreated = false -- Force recreation
     return ensureDirectoryExists()
 end
 
--- Init with auto-save via getgenv()
+-- Safe initialization without metatable complications
 function SaveLib:Init()
+    if isInitialized then
+        warn("SaveLib: Already initialized!")
+        return
+    end
+    
     print("SaveLib: Initializing...")
     print("SaveLib: Base path: " .. basePath)
     print("SaveLib: Game name: " .. gameName)
-    
-    -- Ensure folders exist before doing anything else
+
     updateSavePath()
     print("SaveLib: Full save path: " .. savePath)
-    
+
+    -- Create folders and load data
     local folderSuccess = ensureDirectoryExists()
     if not folderSuccess then
         warn("SaveLib: Failed to create directories during initialization")
+        return false
     end
-    
-    -- Load data
-    self:Load()
-    local lib = self
-    local env = getgenv()
 
-    -- Store original metatable if it exists
-    local originalMT = getmetatable(env)
+    -- Load existing data
+    self:Load()
     
-    -- Remove existing metatable temporarily to avoid conflicts
-    setmetatable(env, nil)
-    
-    -- Populate getgenv() with cached values first
+    -- Populate getgenv() with cached values
+    local env = getgenv()
     for k, v in pairs(cache) do
         env[k] = v
     end
     
-    -- Set up new metatable
-    setmetatable(env, {
-        __newindex = function(t, k, v)
-            -- Always use rawset to avoid recursive calls
-            rawset(t, k, v)
-            
-            -- Update our cache
-            cache[k] = v
-            if autoSave then
-                local success, err = pcall(function()
-                    lib:Save(cache)
-                end)
-                if not success then
-                    warn("SaveLib: Auto-save failed - " .. tostring(err))
-                end
-            end
-        end,
-        __index = function(t, k)
-            -- First check if key exists in the table itself
-            local rawValue = rawget(t, k)
-            if rawValue ~= nil then
-                return rawValue
-            end
-            
-            -- Then check our cache
-            if cache[k] ~= nil then
-                return cache[k]
-            end
-            
-            -- Return nil if not found anywhere
-            return nil
-        end
-    })
+    -- Mark as initialized
+    isInitialized = true
     
-    -- Test save to ensure everything is working
-    pcall(function()
-        lib:Save(cache)
-    end)
-    
-    print("SaveLib: Initialized with path: " .. self:GetCurrentPath())
-end
-
--- Simple init without metatable
-function SaveLib:InitSimple()
-    print("SaveLib: Simple initialization...")
-    print("SaveLib: Base path: " .. basePath)
-    print("SaveLib: Game name: " .. gameName)
-    
-    self:Load()
-    
-    -- Simply populate getgenv() with cached values
-    for k, v in pairs(cache) do
-        getgenv()[k] = v
+    -- Test save to ensure everything works
+    local testSaveSuccess = self:Save(cache)
+    if not testSaveSuccess then
+        warn("SaveLib: Test save failed during initialization")
+        return false
     end
     
-    print("SaveLib: Simple init completed with path: " .. self:GetCurrentPath())
-    print("SaveLib: Use SaveLib:Set(key, value) to save data")
+    print("SaveLib: Successfully initialized!")
+    print("SaveLib: Loaded " .. tostring(table.getn and table.getn(cache) or 0) .. " cached values")
+    return true
+end
+
+-- Alternative method for manual sync
+function SaveLib:SyncToGlobal()
+    if not isInitialized then
+        warn("SaveLib: Must call Init() first")
+        return
+    end
+    
+    local env = getgenv()
+    for k, v in pairs(cache) do
+        env[k] = v
+    end
+end
+
+-- Alternative method for manual sync from global
+function SaveLib:SyncFromGlobal()
+    if not isInitialized then
+        warn("SaveLib: Must call Init() first")
+        return
+    end
+    
+    -- Note: This is dangerous as it will save ALL global variables
+    -- Only use if you know what you're doing
+    warn("SaveLib: SyncFromGlobal is dangerous - it will save all global variables!")
+end
+
+-- Status check
+function SaveLib:GetStatus()
+    return {
+        initialized = isInitialized,
+        foldersCreated = foldersCreated,
+        autoSave = autoSave,
+        basePath = basePath,
+        gameName = gameName,
+        savePath = savePath,
+        cacheSize = 0
+    }
 end
 
 return SaveLib
