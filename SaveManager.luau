@@ -4,36 +4,30 @@ SaveLib.__index = SaveLib
 
 -- Config
 local basePath = "MangoHub/Script-Exploits/Game/"
-local function getGameName()
-    local success, name = pcall(function()
-        return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name
-    end)
-    return success and name or tostring(game.PlaceId)
-end
-local gameName = getGameName()
+local gameName = tostring(game.PlaceId)
 local savePath = basePath .. gameName .. ".json"
 local autoSave = true
+local cache = {}
 
--- Update savePath helper
 local function updateSavePath()
     savePath = basePath .. gameName .. ".json"
 end
 
--- Load file
 function SaveLib:Load()
     if isfile(savePath) then
         local content = readfile(savePath)
         local success, data = pcall(function()
             return HttpService:JSONDecode(content)
         end)
-        if success then
+        if success and type(data) == "table" then
+            cache = data
             return data
         end
     end
-    return {}
+    cache = {}
+    return cache
 end
 
--- Save file
 function SaveLib:Save(data)
     assert(type(data) == "table", "Data must be a table")
     local json = HttpService:JSONEncode(data)
@@ -43,60 +37,48 @@ function SaveLib:Save(data)
     writefile(savePath, json)
 end
 
--- Clear file
 function SaveLib:Clear()
     if isfile(savePath) then
         delfile(savePath)
     end
+    cache = {}
 end
 
--- Check file exists
 function SaveLib:Exists()
     return isfile(savePath)
 end
 
--- Get value by key
 function SaveLib:Get(key, default)
-    local data = self:Load()
-    if data[key] ~= nil then
-        return data[key]
-    end
-    return default
+    return cache[key] ~= nil and cache[key] or default
 end
 
--- Set value by key
 function SaveLib:Set(key, value)
-    local data = self:Load()
-    data[key] = value
+    cache[key] = value
     if autoSave then
-        self:Save(data)
+        self:Save(cache)
     end
 end
 
--- Reset file to {}
 function SaveLib:Reset()
-    self:Save({})
+    cache = {}
+    self:Save(cache)
 end
 
--- Append value to list key
 function SaveLib:Append(key, value)
-    local data = self:Load()
-    if type(data[key]) ~= "table" then
-        data[key] = {}
+    if type(cache[key]) ~= "table" then
+        cache[key] = {}
     end
-    table.insert(data[key], value)
+    table.insert(cache[key], value)
     if autoSave then
-        self:Save(data)
+        self:Save(cache)
     end
 end
 
--- Enable / Disable Auto Save
 function SaveLib:SetAutoSave(state)
     assert(type(state) == "boolean", "State must be true/false")
     autoSave = state
 end
 
--- Change Path
 function SaveLib:SetNewPath(path)
     assert(type(path) == "string", "Path must be a string")
     basePath = path
@@ -105,12 +87,13 @@ end
 
 function SaveLib:SetNewGameName(name)
     assert(type(name) == "string", "Name must be a string")
-    gameName = name
+    gameName = name:gsub("[%c%p%s]", "") -- sanitize
     updateSavePath()
 end
 
+-- Init với auto-save qua getgenv()
 function SaveLib:Init()
-    local cache = self:Load()
+    self:Load()
     local lib = self
 
     setmetatable(getgenv(), {
