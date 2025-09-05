@@ -110,27 +110,26 @@ function SaveLib:SetNewGameName(name)
 end
 
 function SaveLib:Init()
-    local LoadedData = self:Load()
+    local cache = self:Load()
+    local lib = self
 
     setmetatable(getgenv(), {
         __newindex = function(t, k, v)
             rawset(t, k, v)
-            local data = self:Load()
-            data[k] = v
+            cache[k] = v
             if autoSave then
-                self:Save(data)
+                lib:Save(cache)
             end
         end,
         __index = function(t, k)
-            local data = self:Load()
-            if data[k] ~= nil then
-                return data[k]
+            if cache[k] ~= nil then
+                return cache[k]
             end
             return rawget(t, k)
         end
     })
 
-    for k, v in pairs(LoadedData) do
+    for k, v in pairs(cache) do
         rawset(getgenv(), k, v)
     end
 end
