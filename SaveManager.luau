@@ -91,23 +91,48 @@ function SaveLib:Append(key, value)
 end
 
 -- Enable / Disable Auto Save
-function SaveLib:AutoSaveMode(state)
+function SaveLib:SetAutoSave(state)
     assert(type(state) == "boolean", "State must be true/false")
     autoSave = state
 end
 
 -- Change Path
-function SaveLib:ChangeNewPath(path)
+function SaveLib:SetNewPath(path)
     assert(type(path) == "string", "Path must be a string")
     basePath = path
     updateSavePath()
 end
 
--- Change Game Name
-function SaveLib:ChangeNewGameName(name)
+function SaveLib:SetNewGameName(name)
     assert(type(name) == "string", "Name must be a string")
     gameName = name
     updateSavePath()
+end
+
+function SaveLib:Init()
+    local LoadedData = self:Load()
+
+    setmetatable(getgenv(), {
+        __newindex = function(t, k, v)
+            rawset(t, k, v)
+            local data = self:Load()
+            data[k] = v
+            if autoSave then
+                self:Save(data)
+            end
+        end,
+        __index = function(t, k)
+            local data = self:Load()
+            if data[k] ~= nil then
+                return data[k]
+            end
+            return rawget(t, k)
+        end
+    })
+
+    for k, v in pairs(LoadedData) do
+        rawset(getgenv(), k, v)
+    end
 end
 
 return SaveLib
