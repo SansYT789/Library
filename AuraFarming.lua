@@ -13,13 +13,16 @@ local HS = game:GetService("HttpService")
 
 -- Player Cache
 local plr = Plrs.LocalPlayer
-local char, root, hum
-local function refreshChar()
-    char = plr.Character or plr.CharacterAdded:Wait()
-    root = char:WaitForChild("HumanoidRootPart")
-    hum = char:WaitForChild("Humanoid")
+local char = plr.Character or plr.CharacterAdded:Wait()
+local root = char:WaitForChild("HumanoidRootPart")
+local hum = char:WaitForChild("Humanoid")
+
+local function refreshChar(characters)
+    char = characters
+    root = characters:WaitForChild("HumanoidRootPart")
+    hum = characters:WaitForChild("Humanoid")
 end
-refreshChar()
+if plr.Character then refreshChar(plr.Character) end
 
 -- State Machine (Optimized with bitflags)
 local State = {
@@ -930,7 +933,7 @@ end)
 
 -- Character Respawn
 plr.CharacterAdded:Connect(function(newChar)
-    refreshChar()
+    refreshChar(newChar)
     State.rec = false
     State.play = false
     State.loop = false
