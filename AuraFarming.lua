@@ -672,8 +672,10 @@ Run.Heartbeat:Connect(function()
 
     local pos = root.Position
     local state = hum:GetState()
+    local look = root.CFrame.LookVector
+    local dir = hum.MoveDirection
 
-    if not pos or not state then return end
+    if not pos or not state or not look or not dir then return end
 
     if #rec > 0 then
         local l = rec[#rec]
@@ -688,13 +690,16 @@ Run.Heartbeat:Connect(function()
         t = now - recT,
         p = pos,
         s = state,
+        lv = look,
+        md = dir,
     })
 end)
 
 -- Replay (Enhanced)
 task.spawn(function()
     while true do
-        if State.play and #rec > 0 then
+        if State.play and #rec > 1 then
+
             for i = 1, #rec - 1 do
                 if not State.play then break end
 
@@ -702,37 +707,48 @@ task.spawn(function()
                 local nxt = rec[i + 1]
                 if not nxt then break end
 
-                local d = (nxt.p - cur.p).Magnitude
-                local wt = (nxt.t - cur.t) / C.speed
+                local dt = (nxt.t - cur.t) / C.speed
+                local pDiff = nxt.p - root.Position
 
-                if d > 0.7 then
-                    hum:MoveTo(nxt.p)
-
-                    if cur.s == Enum.HumanoidStateType.Jumping then
-                        task.wait(0.04)
-                        hum:ChangeState(Enum.HumanoidStateType.Jumping)
-                    end
-
-                    local st = tick()
-                    local to = math.max(wt, 0.12)
-
-                    while tick() - st < to do
-                        if not State.play then break end
-                        if (root.Position - nxt.p).Magnitude < 2.2 then break end
-                        task.wait(0.04)
-                    end
-                else
-                    task.wait(math.max(wt, 0.04))
+                if nxt.lv then
+                    root.CFrame = CFrame.lookAt(root.Position, root.Position + nxt.lv)
                 end
+
+                if nxt.md and nxt.md.Magnitude > 0 then
+                    hum:Move(nxt.md, true)
+                else
+                    hum:Move(Vector3.zero)
+                end
+
+                -- Check state
+                local st = cur.s
+                if st == Enum.HumanoidStateType.Jumping then
+                    hum:ChangeState(Enum.HumanoidStateType.Jumping)
+
+                elseif st == Enum.HumanoidStateType.Freefall then
+                    hum:ChangeState(Enum.HumanoidStateType.Freefall)
+
+                elseif st == Enum.HumanoidStateType.Climbing then
+                    hum:ChangeState(Enum.HumanoidStateType.Climbing)
+
+                elseif st == Enum.HumanoidStateType.Swimming then
+                    hum:ChangeState(Enum.HumanoidStateType.Swimming)
+
+                elseif st == Enum.HumanoidStateType.Seated then
+                    hum.Sit = true
+                end
+
+                task.wait(math.max(dt, 0.016)) -- throttle 60 FPS
             end
 
-            if State.loop then
-                task.wait(0.25)
-            else
+            if not State.loop then
                 State.play = false
+            else
+                task.wait(0.25)
             end
+
         else
-            task.wait(0.08)
+            task.wait(0.05)
         end
     end
 end)
