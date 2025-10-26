@@ -662,21 +662,32 @@ T4:CreateLabel("Performance Optimized")
 local lastF = tick()
 Run.Heartbeat:Connect(function()
     if not State.rec then return end
+
+    if not root or not hum then return end
+    if not root.Parent or not hum.Parent then return end
+
     local now = tick()
     if now - lastF < C.recHz then return end
     lastF = now
 
+    local pos = root.Position
+    local state = hum:GetState()
+
+    if not pos or not state then return end
+
     if #rec > 0 then
         local l = rec[#rec]
-        if (root.Position - l.p).Magnitude < 0.35 and l.s == hum:GetState() then
-            return
+        if l.p and l.s then
+            if (pos - l.p).Magnitude < 0.35 and l.s == state then
+                return
+            end
         end
     end
 
     table.insert(rec, {
         t = now - recT,
-        p = root.Position,
-        s = hum:GetState(),
+        p = pos,
+        s = state,
     })
 end)
 
