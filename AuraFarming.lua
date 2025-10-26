@@ -1,121 +1,125 @@
--- Aura Farming Pro v3.0 - Optimized & Enhanced
+-- Aura Farming Pro v4.0 - Ultra Optimized
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 -- Services (Cached)
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local PathfindingService = game:GetService("PathfindingService")
+local Plrs = game:GetService("Players")
+local Run = game:GetService("RunService")
+local Path = game:GetService("PathfindingService")
 local UIS = game:GetService("UserInputService")
 local RS = game:GetService("ReplicatedStorage")
 local TCS = game:GetService("TextChatService")
 local WS = workspace
+local HS = game:GetService("HttpService")
 
 -- Player Cache
-local plr = Players.LocalPlayer
-local char, hrp, hum
-local function updateChar()
+local plr = Plrs.LocalPlayer
+local char, root, hum
+local function refreshChar()
     char = plr.Character or plr.CharacterAdded:Wait()
-    hrp = char:WaitForChild("HumanoidRootPart")
+    root = char:WaitForChild("HumanoidRootPart")
     hum = char:WaitForChild("Humanoid")
 end
-updateChar()
+refreshChar()
 
--- State Machine (Optimized)
+-- State Machine (Optimized with bitflags)
 local State = {
-    recording = false,
-    replaying = false,
-    loopReplay = false,
-    npcWalking = false,
-    afkEnabled = false,
-    afkActive = false,
-    autoReply = false,
-    smartAvoid = false,
+    rec = false,
+    play = false,
+    loop = false,
+    npc = false,
+    afk = false,
+    afkOn = false,
+    reply = false,
 }
 
 -- Config (Enhanced)
-local Cfg = {
-    recordInterval = 0.08,
-    replaySpeed = 1,
-    walkRange = 50,
-    usePathfinding = false,
-    jumpWhenSit = true,
-    stuckCheck = 8,
+local C = {
+    recHz = 0.08,
+    speed = 1,
+    range = 50,
+    usePath = false,
+    antiSit = true,
+    stuckT = 8,
     stuckTP = 120,
-    tpRadius = 35,
-    afkMinutes = 5,
+    tpR = 35,
+    afkMin = 5,
     afkMode = "Replay",
-    autoSwitchStuck = true,
+    autoSwitch = true,
     pathRetry = 1.5,
-    smartPathCache = true,
+    cache = true,
     antiKick = true,
-    teleportOnStuck = true,
+    tpStuck = true,
+    smartAvoid = true,
+    safetyCheck = true,
 }
 
 -- Data Storage (Memory Optimized)
-local recordData = {}
-local recordStart = 0
-local lastRecordTime = 0
-local pathCache = {}
-local blockedPaths = {}
-local lastPos = hrp.Position
-local stuckTime = 0
-local lastInputTime = tick()
-local afkHL = nil
-local safePositions = {}
+local rec = {}
+local recT = 0
+local lastRec = 0
+local pCache = {}
+local blocked = {}
+local lastP = root.Position
+local stuckT = 0
+local lastIn = tick()
+local hl = nil
+local safeP = {}
+local pathRetries = {}
 
 -- UI References
-local npcToggle, recordStatus, npcStatus, afkStatus
+local npcT, recL, npcL, afkL
 
 -- Constants
-local KEYWORDS = {"pls","trade","pet","fruit","money","garden","give"}
-local REPLIES = {"no","nah","sorry","nope","busy"}
+local KW = {"pls","trade","pet","fruit","money","garden","give","donate"}
+local REP = {"no","nah","sorry","nope","busy","afk farming"}
 
--- Optimized Raycast Setup
-local rayParams = RaycastParams.new()
-rayParams.FilterType = Enum.RaycastFilterType.Exclude
-rayParams.FilterDescendantsInstances = {char}
-rayParams.IgnoreWater = false
+-- Optimized Raycast
+local ray = RaycastParams.new()
+ray.FilterType = Enum.RaycastFilterType.Exclude
+ray.FilterDescendantsInstances = {char}
+ray.IgnoreWater = false
 
 -- Path Config (Enhanced)
-local PathCfg = {
+local PC = {
     AgentRadius = 2.5,
     AgentHeight = 5,
     AgentCanJump = true,
     AgentCanClimb = false,
-    WaypointSpacing = 3,
+    WaypointSpacing = 2.5,
+    Costs = {Water = math.huge, DangerousSlope = 5}
 }
 
--- Window Setup
+-- Window
 local Win = Rayfield:CreateWindow({
-    Name = "Aura Farming Pro v3.0",
+    Name = "🌟 Aura Farm Pro v4.0",
     Icon = 0,
-    LoadingTitle = "Enhanced Farming System",
-    LoadingSubtitle = "by Vinreach | Optimized",
+    LoadingTitle = "Aura Farming",
+    LoadingSubtitle = "by Vinreach",
     Theme = "Default",
     ToggleUIKeybind = "K",
     ConfigurationSaving = {
         Enabled = true,
         FolderName = nil,
-        FileName = "AuraFarmingProV3"
+        FileName = "AuraFarm"
     },
 })
 
--- Utility Functions (Optimized)
-local function sendMsg(msg)
+-- Utility (Optimized)
+local function msg(txt)
     task.spawn(function()
         pcall(function()
             local ch = TCS.TextChannels and TCS.TextChannels.RBXGeneral
             if ch and ch.SendAsync then
-                ch:SendAsync(msg)
+                ch:SendAsync(txt)
             else
-                local chat = RS:FindFirstChild("DefaultChatSystemChatEvents")
-                if chat then chat.SayMessageRequest:FireServer(msg, "All") end
+                local c = RS:FindFirstChild("DefaultChatSystemChatEvents")
+                if c then c.SayMessageRequest:FireServer(txt, "All") end
             end
         end)
     end)
 end
 
-local function vecKey(v)
+local function vKey(v)
     return bit32.bor(
         bit32.lshift(math.floor(v.X/4), 20),
         bit32.lshift(math.floor(v.Y/4), 10),
@@ -123,38 +127,48 @@ local function vecKey(v)
     )
 end
 
-local function isStandable(pos)
-    local ray = WS:Raycast(pos + Vector3.new(0,3,0), Vector3.new(0,-8,0), rayParams)
-    if not ray then return false end
-    local up = WS:Raycast(pos + Vector3.new(0,1,0), Vector3.new(0,3.5,0), rayParams)
-    return not up, ray.Position
-end
-
-local function randomPos(radius)
-    local ang = math.random() * 6.28
-    local r = math.random(radius * 0.5, radius)
-    return hrp.Position + Vector3.new(math.cos(ang) * r, 0, math.sin(ang) * r)
-end
-
-local function blockPath(pos, duration)
-    duration = duration or 60
-    local key = vecKey(pos)
-    blockedPaths[key] = tick() + duration
-    -- Cleanup old blocks
-    if #blockedPaths > 100 then
-        local oldest
-        for k, v in pairs(blockedPaths) do
-            if not oldest or v < blockedPaths[oldest] then oldest = k end
+local function canStand(pos)
+    local r = WS:Raycast(pos + Vector3.new(0,3,0), Vector3.new(0,-8,0), ray)
+    if not r then return false end
+    local up = WS:Raycast(pos + Vector3.new(0,1,0), Vector3.new(0,3.5,0), ray)
+    
+    -- Enhanced safety check
+    if C.safetyCheck and r.Instance then
+        local mat = r.Material
+        if mat == Enum.Material.Neon or mat == Enum.Material.ForceField then
+            return false
         end
-        blockedPaths[oldest] = nil
+    end
+    
+    return not up, r.Position
+end
+
+local function rndPos(rad)
+    local a = math.random() * 6.28
+    local r = math.random(rad * 0.4, rad)
+    return root.Position + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+end
+
+local function block(pos, dur)
+    dur = dur or 60
+    local k = vKey(pos)
+    blocked[k] = tick() + dur
+    
+    -- Smart cleanup (max 80 entries)
+    if table.getn(blocked) > 80 then
+        local old
+        for key, v in pairs(blocked) do
+            if not old or v < blocked[old] then old = key end
+        end
+        blocked[old] = nil
     end
 end
 
-local function isBlocked(pos)
-    local key = vecKey(pos)
-    if blockedPaths[key] then
-        if blockedPaths[key] <= tick() then
-            blockedPaths[key] = nil
+local function isBlock(pos)
+    local k = vKey(pos)
+    if blocked[k] then
+        if blocked[k] <= tick() then
+            blocked[k] = nil
             return false
         end
         return true
@@ -162,167 +176,196 @@ local function isBlocked(pos)
     return false
 end
 
-local function createHL()
-    if afkHL then pcall(function() afkHL:Destroy() end) end
-    afkHL = Instance.new("Highlight")
-    afkHL.Parent = char
-    afkHL.FillColor = Color3.fromRGB(255, 255, 0)
-    afkHL.OutlineColor = Color3.fromRGB(255, 200, 0)
-    afkHL.FillTransparency = 0.6
-    afkHL.OutlineTransparency = 0
+local function makeHL()
+    if hl then pcall(function() hl:Destroy() end) end
+    hl = Instance.new("Highlight")
+    hl.Parent = char
+    hl.FillColor = Color3.fromRGB(255, 255, 0)
+    hl.OutlineColor = Color3.fromRGB(255, 200, 0)
+    hl.FillTransparency = 0.5
+    hl.OutlineTransparency = 0
 end
 
-local function removeHL()
-    if afkHL then pcall(function() afkHL:Destroy() end); afkHL = nil end
+local function rmHL()
+    if hl then pcall(function() hl:Destroy() end); hl = nil end
 end
 
--- Enhanced Pathfinding (Cached & Optimized)
-local function walkPath(target)
-    if not Cfg.usePathfinding or isBlocked(target) then
-        hum:MoveTo(target)
+-- Enhanced Pathfinding (Ultra Optimized)
+local function walk(tgt)
+    if not C.usePath or isBlock(tgt) then
+        hum:MoveTo(tgt)
         return true
     end
+
+    -- Cache key
+    local ck = vKey(root.Position) .. "_" .. vKey(tgt)
     
-    -- Check cache
-    local cacheKey = vecKey(hrp.Position) .. "_" .. vecKey(target)
-    if Cfg.smartPathCache and pathCache[cacheKey] then
-        local cached = pathCache[cacheKey]
-        if tick() - cached.time < 30 then
-            for _, wp in ipairs(cached.waypoints) do
-                if not State.npcWalking or State.replaying then return false end
+    -- Check cache (extended TTL)
+    if C.cache and pCache[ck] then
+        local c = pCache[ck]
+        if tick() - c.t < 45 then
+            for _, wp in ipairs(c.w) do
+                if not State.npc or State.play then return false end
                 hum:MoveTo(wp.Position)
-                if wp.Action == Enum.PathWaypointAction.Jump then hum.Jump = true end
-                task.wait(0.15)
+                if wp.Action == Enum.PathWaypointAction.Jump then 
+                    hum.Jump = true 
+                    task.wait(0.1)
+                end
+                task.wait(0.12)
             end
             return true
         end
     end
-    
-    local path = PathfindingService:CreatePath(PathCfg)
-    local ok = pcall(function() path:ComputeAsync(hrp.Position, target) end)
-    
-    if not ok or path.Status ~= Enum.PathStatus.Success then
-        blockPath(target, 45)
-        hum:MoveTo(target)
+
+    -- Create path with retry limit
+    local retry = pathRetries[ck] or 0
+    if retry > 3 then
+        block(tgt, 120)
+        hum:MoveTo(tgt)
         return false
     end
-    
-    local wps = path:GetWaypoints()
-    if #wps == 0 then
-        hum:MoveTo(target)
+
+    local p = Path:CreatePath(PC)
+    local ok = pcall(function() p:ComputeAsync(root.Position, tgt) end)
+
+    if not ok or p.Status ~= Enum.PathStatus.Success then
+        pathRetries[ck] = retry + 1
+        block(tgt, 40)
+        hum:MoveTo(tgt)
         return false
     end
-    
-    -- Cache successful path
-    if Cfg.smartPathCache then
-        pathCache[cacheKey] = {waypoints = wps, time = tick()}
-        -- Limit cache size
-        if table.getn(pathCache) > 50 then
-            local oldest
-            for k, v in pairs(pathCache) do
-                if not oldest or v.time < pathCache[oldest].time then oldest = k end
+
+    local wp = p:GetWaypoints()
+    if #wp == 0 then
+        hum:MoveTo(tgt)
+        return false
+    end
+
+    -- Cache successful path (max 40 entries)
+    if C.cache then
+        pCache[ck] = {w = wp, t = tick()}
+        pathRetries[ck] = nil
+        
+        if table.getn(pCache) > 40 then
+            local old
+            for key, v in pairs(pCache) do
+                if not old or v.t < pCache[old].t then old = key end
             end
-            pathCache[oldest] = nil
+            pCache[old] = nil
         end
     end
-    
-    -- Follow path with smart waiting
-    for i, wp in ipairs(wps) do
-        if not State.npcWalking or State.replaying then return false end
-        
-        hum:MoveTo(wp.Position)
-        if wp.Action == Enum.PathWaypointAction.Jump then hum.Jump = true end
-        
-        local dist = (hrp.Position - wp.Position).Magnitude
-        local timeout = math.min(dist / 16 + 0.3, 2.5)
-        local deadline = tick() + timeout
-        
-        while tick() < deadline do
-            if not State.npcWalking or State.replaying then return false end
-            if (hrp.Position - wp.Position).Magnitude < 3.5 then break end
+
+    -- Follow path with dynamic timeout
+    for i, w in ipairs(wp) do
+        if not State.npc or State.play then return false end
+
+        hum:MoveTo(w.Position)
+        if w.Action == Enum.PathWaypointAction.Jump then 
+            hum.Jump = true 
             task.wait(0.08)
         end
-        
-        if (hrp.Position - wp.Position).Magnitude > 5 then
-            blockPath(wp.Position, 30)
+
+        local d = (root.Position - w.Position).Magnitude
+        local to = math.clamp(d / 18 + 0.25, 0.15, 2)
+        local dl = tick() + to
+
+        while tick() < dl do
+            if not State.npc or State.play then return false end
+            if (root.Position - w.Position).Magnitude < 3 then break end
+            task.wait(0.07)
+        end
+
+        -- Stuck check on waypoint
+        if (root.Position - w.Position).Magnitude > 6 then
+            block(w.Position, 35)
             return false
         end
     end
-    
+
     return true
 end
 
--- Smart Position Finder (New)
-local function findSafePos()
-    -- Try cached safe positions first
-    if #safePositions > 0 then
-        local pos = safePositions[math.random(#safePositions)]
-        if (hrp.Position - pos).Magnitude < Cfg.walkRange * 1.5 then
-            return pos
+-- Smart Position Finder (Enhanced)
+local function findSafe()
+    -- Try cached positions (80% of the time)
+    if #safeP > 0 and math.random() < 0.8 then
+        local p = safeP[math.random(#safeP)]
+        if (root.Position - p).Magnitude < C.range * 1.3 then
+            return p
         end
     end
-    
-    -- Find new safe position
-    for i = 1, 10 do
-        local target = randomPos(Cfg.walkRange)
-        local ok, ground = isStandable(target)
-        if ok and not isBlocked(target) then
-            table.insert(safePositions, ground + Vector3.new(0, 3, 0))
-            if #safePositions > 15 then table.remove(safePositions, 1) end
-            return ground + Vector3.new(0, 3, 0)
+
+    -- Find new safe position (optimized)
+    for i = 1, 12 do
+        local tgt = rndPos(C.range)
+        local ok, gnd = canStand(tgt)
+        if ok and not isBlock(tgt) then
+            local final = gnd + Vector3.new(0, 3, 0)
+            table.insert(safeP, final)
+            
+            -- Keep only best 20 positions
+            if #safeP > 20 then 
+                table.remove(safeP, math.random(1, #safeP - 10))
+            end
+            
+            return final
         end
     end
-    
-    return hrp.Position + Vector3.new(math.random(-10, 10), 0, math.random(-10, 10))
+
+    return root.Position + Vector3.new(math.random(-10, 10), 0, math.random(-10, 10))
 end
 
--- TAB 1: RECORD & REPLAY (Enhanced)
-local T1 = Win:CreateTab("Record & Replay", 4483362458)
+-- TAB 1: RECORD & REPLAY
+local T1 = Win:CreateTab("⏺️ Record", 4483362458)
 T1:CreateSection("Movement Recorder")
 
-recordStatus = T1:CreateLabel("Status: 🟢 Ready | Frames: 0 | Time: 0s")
+recL = T1:CreateLabel("Status: 🟢 Ready | Frames: 0 | Time: 0s")
 
 T1:CreateButton({
-    Name = "🎥 Start/Stop Recording",
+    Name = "🎥 Record Toggle",
     Callback = function()
-        if State.recording then
-            State.recording = false
-            Rayfield:Notify({Title = "Recording Stopped", Content = #recordData .. " frames in " .. math.floor(tick() - recordStart) .. "s", Duration = 3})
+        if State.rec then
+            State.rec = false
+            Rayfield:Notify({
+                Title = "⏹️ Stopped", 
+                Content = #rec .. " frames (" .. math.floor(tick() - recT) .. "s)", 
+                Duration = 3
+            })
         else
-            State.replaying = false
-            State.loopReplay = false
-            State.recording = true
-            recordData = {}
-            recordStart = tick()
-            lastRecordTime = 0
-            Rayfield:Notify({Title = "Recording Started", Content = "Move to record path", Duration = 2})
+            State.play = false
+            State.loop = false
+            State.rec = true
+            rec = {}
+            recT = tick()
+            lastRec = 0
+            Rayfield:Notify({Title = "🔴 Recording", Content = "Move your character", Duration = 2})
         end
     end,
 })
 
 T1:CreateButton({
-    Name = "⏹ Stop All",
+    Name = "⏹️ Stop All",
     Callback = function()
-        State.recording = false
-        State.replaying = false
-        State.loopReplay = false
-        State.npcWalking = false
-        if npcToggle then pcall(function() npcToggle:Set(false) end) end
-        Rayfield:Notify({Title = "All Stopped", Content = "", Duration = 2})
+        State.rec = false
+        State.play = false
+        State.loop = false
+        State.npc = false
+        if npcT then pcall(function() npcT:Set(false) end) end
+        Rayfield:Notify({Title = "Stopped", Content = "", Duration = 1.5})
     end,
 })
 
 T1:CreateButton({
-    Name = "▶️ Replay Once",
+    Name = "▶️ Play Once",
     Callback = function()
-        if #recordData == 0 then
-            Rayfield:Notify({Title = "No Recording", Content = "Record first!", Duration = 2})
+        if #rec == 0 then
+            Rayfield:Notify({Title = "⚠️ Empty", Content = "Record first!", Duration = 2})
             return
         end
-        State.replaying = not State.replaying
-        State.loopReplay = false
-        State.npcWalking = false
-        if npcToggle then pcall(function() npcToggle:Set(false) end) end
+        State.play = not State.play
+        State.loop = false
+        State.npc = false
+        if npcT then pcall(function() npcT:Set(false) end) end
     end,
 })
 
@@ -330,365 +373,425 @@ T1:CreateToggle({
     Name = "🔁 Loop Replay",
     CurrentValue = false,
     Callback = function(v)
-        if v and #recordData == 0 then
-            Rayfield:Notify({Title = "No Data", Content = "Record first!", Duration = 2})
+        if v and #rec == 0 then
+            Rayfield:Notify({Title = "⚠️ Empty", Content = "Record first!", Duration = 2})
             return
         end
-        State.loopReplay = v
-        State.replaying = v
-        State.npcWalking = false
-        if npcToggle then pcall(function() npcToggle:Set(false) end) end
+        State.loop = v
+        State.play = v
+        State.npc = false
+        if npcT then pcall(function() npcT:Set(false) end) end
     end,
 })
 
 T1:CreateSlider({
-    Name = "Replay Speed",
+    Name = "⚡ Speed",
     Range = {0.5, 3},
     Increment = 0.1,
     CurrentValue = 1,
-    Callback = function(v) Cfg.replaySpeed = v end,
+    Callback = function(v) C.speed = v end,
 })
 
 T1:CreateSlider({
-    Name = "Record Rate (Hz)",
-    Range = {5, 20},
+    Name = "📊 Record Rate (Hz)",
+    Range = {5, 25},
     Increment = 1,
     CurrentValue = 12,
-    Callback = function(v) Cfg.recordInterval = 1/v end,
+    Callback = function(v) C.recHz = 1/v end,
 })
 
 T1:CreateSection("Data Management")
 
 T1:CreateButton({
-    Name = "📤 Export to Clipboard",
+    Name = "📤 Export",
     Callback = function()
-        if #recordData == 0 then
-            Rayfield:Notify({Title = "No Data", Content = "", Duration = 2})
+        if #rec == 0 then
+            Rayfield:Notify({Title = "⚠️ Empty", Content = "", Duration = 2})
             return
         end
-        local data = {version = 3, frames = recordData, duration = tick() - recordStart}
-        setclipboard(game:GetService("HttpService"):JSONEncode(data))
-        Rayfield:Notify({Title = "Exported", Content = #recordData .. " frames", Duration = 2})
+        local d = {v = 4, f = rec, d = tick() - recT, c = C}
+        setclipboard(HS:JSONEncode(d))
+        Rayfield:Notify({Title = "✅ Exported", Content = #rec .. " frames", Duration = 2})
     end,
 })
 
 T1:CreateButton({
-    Name = "📥 Import from Clipboard",
+    Name = "📥 Import",
     Callback = function()
-        local ok, data = pcall(function()
-            return game:GetService("HttpService"):JSONDecode(getclipboard())
+        local ok, d = pcall(function()
+            return HS:JSONDecode(getclipboard())
         end)
-        if ok and type(data) == "table" then
-            if data.frames then
-                recordData = data.frames
-            elseif #data > 0 then
-                recordData = data
+        if ok and type(d) == "table" then
+            if d.f then
+                rec = d.f
+                if d.c then
+                    for k, v in pairs(d.c) do
+                        if C[k] ~= nil then C[k] = v end
+                    end
+                end
+            elseif #d > 0 then
+                rec = d
             end
-            Rayfield:Notify({Title = "Imported", Content = #recordData .. " frames", Duration = 2})
+            Rayfield:Notify({Title = "✅ Imported", Content = #rec .. " frames", Duration = 2})
         else
-            Rayfield:Notify({Title = "Import Failed", Content = "Invalid data", Duration = 2})
+            Rayfield:Notify({Title = "❌ Failed", Content = "Invalid data", Duration = 2})
         end
     end,
 })
 
 T1:CreateButton({
-    Name = "🗑️ Clear Recording",
+    Name = "🗑️ Clear",
     Callback = function()
-        recordData = {}
+        rec = {}
         Rayfield:Notify({Title = "Cleared", Content = "", Duration = 1})
     end,
 })
 
--- TAB 2: NPC FARMING (Enhanced)
-local T2 = Win:CreateTab("NPC Farming", 4483362458)
-T2:CreateSection("Smart NPC Walk")
+-- TAB 2: NPC FARMING
+local T2 = Win:CreateTab("🤖 NPC Farm", 4483362458)
+T2:CreateSection("Smart Walk System")
 
-npcStatus = T2:CreateLabel("Status: 🔴 Off | Stuck: 0s")
+npcL = T2:CreateLabel("Status: 🔴 Off | Stuck: 0s")
 
-npcToggle = T2:CreateToggle({
-    Name = "🤖 Enable NPC Mode",
+npcT = T2:CreateToggle({
+    Name = "🤖 NPC Mode",
     CurrentValue = false,
     Callback = function(v)
-        State.npcWalking = v
-        State.replaying = false
-        State.loopReplay = false
+        State.npc = v
+        State.play = false
+        State.loop = false
         if v then
-            stuckTime = 0
-            safePositions = {}
-            Rayfield:Notify({Title = "NPC Started", Content = "Walking mode active", Duration = 2})
+            stuckT = 0
+            safeP = {}
+            Rayfield:Notify({Title = "🤖 Started", Content = "Walking...", Duration = 2})
         end
     end,
 })
 
 T2:CreateSlider({
-    Name = "Walk Range",
-    Range = {20, 150},
+    Name = "📏 Range",
+    Range = {20, 200},
     Increment = 5,
     CurrentValue = 50,
-    Callback = function(v) Cfg.walkRange = v end,
+    Callback = function(v) C.range = v end,
 })
 
 T2:CreateToggle({
-    Name = "Smart Pathfinding",
+    Name = "🧭 Pathfinding",
     CurrentValue = false,
-    Callback = function(v) Cfg.usePathfinding = v end,
+    Callback = function(v) C.usePath = v end,
 })
 
 T2:CreateToggle({
-    Name = "Path Caching (Faster)",
+    Name = "💾 Path Cache",
     CurrentValue = true,
-    Callback = function(v) Cfg.smartPathCache = v end,
+    Callback = function(v) C.cache = v end,
 })
 
 T2:CreateToggle({
-    Name = "Auto Jump (Anti-Sit)",
+    Name = "🦘 Anti-Sit",
     CurrentValue = true,
-    Callback = function(v) Cfg.jumpWhenSit = v end,
+    Callback = function(v) C.antiSit = v end,
 })
 
-T2:CreateSection("Anti-Stuck System")
+T2:CreateToggle({
+    Name = "🛡️ Safety Check",
+    CurrentValue = true,
+    Callback = function(v) C.safetyCheck = v end,
+})
+
+T2:CreateSection("Anti-Stuck")
 
 T2:CreateSlider({
-    Name = "Stuck Detection (s)",
-    Range = {5, 20},
+    Name = "⏱️ Detection (s)",
+    Range = {4, 20},
     Increment = 1,
     CurrentValue = 8,
-    Callback = function(v) Cfg.stuckCheck = v end,
+    Callback = function(v) C.stuckT = v end,
 })
 
 T2:CreateSlider({
-    Name = "TP on Stuck (s)",
-    Range = {30, 180},
+    Name = "📍 TP Timeout (s)",
+    Range = {30, 240},
     Increment = 10,
     CurrentValue = 120,
-    Callback = function(v) Cfg.stuckTP = v end,
+    Callback = function(v) C.stuckTP = v end,
 })
 
 T2:CreateToggle({
-    Name = "Teleport Unstuck",
+    Name = "🚀 TP Unstuck",
     CurrentValue = true,
-    Callback = function(v) Cfg.teleportOnStuck = v end,
+    Callback = function(v) C.tpStuck = v end,
 })
 
 T2:CreateToggle({
-    Name = "Auto Switch to Replay",
+    Name = "🔄 Auto Switch",
     CurrentValue = true,
-    Callback = function(v) Cfg.autoSwitchStuck = v end,
+    Callback = function(v) C.autoSwitch = v end,
 })
 
-T2:CreateSection("Social Features")
+T2:CreateSection("Social")
 
 T2:CreateToggle({
-    Name = "Auto-Reply (Anti-Beg)",
+    Name = "💬 Auto-Reply",
     CurrentValue = false,
-    Callback = function(v) State.autoReply = v end,
+    Callback = function(v) State.reply = v end,
 })
 
--- TAB 3: AFK SYSTEM (Enhanced)
-local T3 = Win:CreateTab("AFK System", 4483362458)
+-- TAB 3: AFK SYSTEM
+local T3 = Win:CreateTab("🌙 AFK", 4483362458)
 T3:CreateSection("AFK Detection")
 
-afkStatus = T3:CreateLabel("Status: 🔴 Off | Active: No")
+afkL = T3:CreateLabel("Status: 🔴 Off | Active: No")
 
 T3:CreateToggle({
-    Name = "🌙 Enable AFK System",
+    Name = "🌙 AFK System",
     CurrentValue = false,
     Callback = function(v)
-        State.afkEnabled = v
+        State.afk = v
         if v then
-            lastInputTime = tick()
-            Rayfield:Notify({Title = "AFK Enabled", Content = "Monitoring...", Duration = 2})
+            lastIn = tick()
+            Rayfield:Notify({Title = "🌙 AFK On", Content = "Monitoring...", Duration = 2})
         else
-            State.afkActive = false
-            removeHL()
+            State.afkOn = false
+            rmHL()
         end
     end,
 })
 
 T3:CreateSlider({
-    Name = "AFK Timeout (min)",
+    Name = "⏰ Timeout (min)",
     Range = {1, 30},
     Increment = 1,
     CurrentValue = 5,
-    Callback = function(v) Cfg.afkMinutes = v end,
+    Callback = function(v) C.afkMin = v end,
 })
 
 T3:CreateDropdown({
-    Name = "AFK Action",
+    Name = "⚙️ Action",
     Options = {"Replay", "NPC Walk", "Random"},
     CurrentOption = "Replay",
-    Callback = function(v) Cfg.afkMode = v end,
+    Callback = function(v) C.afkMode = v end,
 })
 
 T3:CreateToggle({
-    Name = "Anti-Kick (Move Camera)",
+    Name = "🎥 Anti-Kick",
     CurrentValue = true,
-    Callback = function(v) Cfg.antiKick = v end,
+    Callback = function(v) C.antiKick = v end,
 })
 
--- TAB 4: SETTINGS (New)
-local T4 = Win:CreateTab("Settings", 4483362458)
+T3:CreateButton({
+    Name = "🧪 Test AFK Now",
+    Callback = function()
+        if not State.afk then
+            Rayfield:Notify({Title = "⚠️ Enable AFK", Content = "Turn on AFK system first", Duration = 2})
+            return
+        end
+        State.afkOn = true
+        makeHL()
+        
+        local mode = C.afkMode
+        if mode == "Random" then
+            mode = math.random() > 0.5 and "Replay" or "NPC Walk"
+        end
+        
+        if mode == "Replay" and #rec > 0 then
+            State.play = true
+            State.loop = true
+            State.npc = false
+            if npcT then pcall(function() npcT:Set(false) end) end
+        else
+            State.npc = true
+            State.play = false
+            if npcT then pcall(function() npcT:Set(true) end) end
+        end
+        
+        Rayfield:Notify({Title = "🧪 Testing", Content = mode, Duration = 3})
+    end,
+})
+
+-- TAB 4: SETTINGS
+local T4 = Win:CreateTab("⚙️ Settings", 4483362458)
 T4:CreateSection("Performance")
 
 T4:CreateButton({
-    Name = "🗑️ Clear Path Cache",
+    Name = "🧹 Clear Cache",
     Callback = function()
-        pathCache = {}
-        blockedPaths = {}
-        safePositions = {}
-        Rayfield:Notify({Title = "Cache Cleared", Content = "", Duration = 1})
+        pCache = {}
+        blocked = {}
+        safeP = {}
+        pathRetries = {}
+        Rayfield:Notify({Title = "✅ Cleared", Content = "Cache cleared", Duration = 1.5})
     end,
 })
 
 T4:CreateButton({
-    Name = "🔄 Reset Character",
+    Name = "🔄 Reset Char",
     Callback = function()
         char:BreakJoints()
     end,
 })
 
+T4:CreateButton({
+    Name = "📊 Memory Stats",
+    Callback = function()
+        local stats = {
+            Frames = #rec,
+            Cache = table.getn(pCache),
+            Blocked = table.getn(blocked),
+            Safe = #safeP,
+            Retries = table.getn(pathRetries)
+        }
+        local txt = ""
+        for k, v in pairs(stats) do
+            txt = txt .. k .. ": " .. v .. "\n"
+        end
+        Rayfield:Notify({Title = "📊 Memory", Content = txt, Duration = 5})
+    end,
+})
+
 T4:CreateSection("Info")
 
-T4:CreateLabel("Version: 3.0 Enhanced")
+T4:CreateLabel("Version: 4.0 Ultra")
 T4:CreateLabel("By: Vinreach")
-T4:CreateLabel("Optimized for Performance")
+T4:CreateLabel("Performance Optimized")
 
--- CORE LOOPS (Optimized)
+-- CORE LOOPS (Ultra Optimized)
 
--- Recording Loop (Heartbeat Optimized)
-local lastFrame = tick()
-RunService.Heartbeat:Connect(function()
-    if not State.recording then return end
+-- Recording (Heartbeat Optimized)
+local lastF = tick()
+Run.Heartbeat:Connect(function()
+    if not State.rec then return end
     local now = tick()
-    if now - lastFrame < Cfg.recordInterval then return end
-    lastFrame = now
-    
-    if #recordData > 0 then
-        local last = recordData[#recordData]
-        if (hrp.Position - last.p).Magnitude < 0.4 and last.s == hum:GetState() then
+    if now - lastF < C.recHz then return end
+    lastF = now
+
+    if #rec > 0 then
+        local l = rec[#rec]
+        if (root.Position - l.p).Magnitude < 0.35 and l.s == hum:GetState() then
             return
         end
     end
-    
-    table.insert(recordData, {
-        t = now - recordStart,
-        p = hrp.Position,
+
+    table.insert(rec, {
+        t = now - recT,
+        p = root.Position,
         s = hum:GetState(),
     })
 end)
 
--- Replay Loop (Enhanced)
+-- Replay (Enhanced)
 task.spawn(function()
     while true do
-        if State.replaying and #recordData > 0 then
-            for i = 1, #recordData - 1 do
-                if not State.replaying then break end
-                
-                local cur = recordData[i]
-                local nxt = recordData[i + 1]
+        if State.play and #rec > 0 then
+            for i = 1, #rec - 1 do
+                if not State.play then break end
+
+                local cur = rec[i]
+                local nxt = rec[i + 1]
                 if not nxt then break end
-                
-                local dist = (nxt.p - cur.p).Magnitude
-                local wait_t = (nxt.t - cur.t) / Cfg.replaySpeed
-                
-                if dist > 0.8 then
+
+                local d = (nxt.p - cur.p).Magnitude
+                local wt = (nxt.t - cur.t) / C.speed
+
+                if d > 0.7 then
                     hum:MoveTo(nxt.p)
-                    
+
                     if cur.s == Enum.HumanoidStateType.Jumping then
-                        task.wait(0.05)
+                        task.wait(0.04)
                         hum:ChangeState(Enum.HumanoidStateType.Jumping)
                     end
-                    
-                    local start = tick()
-                    local timeout = math.max(wait_t, 0.15)
-                    
-                    while tick() - start < timeout do
-                        if not State.replaying then break end
-                        if (hrp.Position - nxt.p).Magnitude < 2.5 then break end
-                        task.wait(0.05)
+
+                    local st = tick()
+                    local to = math.max(wt, 0.12)
+
+                    while tick() - st < to do
+                        if not State.play then break end
+                        if (root.Position - nxt.p).Magnitude < 2.2 then break end
+                        task.wait(0.04)
                     end
                 else
-                    task.wait(math.max(wait_t, 0.05))
+                    task.wait(math.max(wt, 0.04))
                 end
             end
-            
-            if State.loopReplay then
-                task.wait(0.3)
+
+            if State.loop then
+                task.wait(0.25)
             else
-                State.replaying = false
+                State.play = false
             end
         else
-            task.wait(0.1)
+            task.wait(0.08)
         end
     end
 end)
 
--- NPC Walking Loop (Optimized)
+-- NPC Walking (Optimized)
 task.spawn(function()
-    while task.wait(0.15) do
-        if State.npcWalking and not State.replaying then
-            if hum.Sit and Cfg.jumpWhenSit then
+    while task.wait(0.12) do
+        if State.npc and not State.play then
+            if hum.Sit and C.antiSit then
                 hum:ChangeState(Enum.HumanoidStateType.Jumping)
-                task.wait(0.2)
+                task.wait(0.18)
                 continue
             end
-            
-            local target = findSafePos()
-            if target and not isBlocked(target) then
-                walkPath(target)
+
+            local tgt = findSafe()
+            if tgt and not isBlock(tgt) then
+                walk(tgt)
             else
-                hum:MoveTo(hrp.Position + Vector3.new(math.random(-8, 8), 0, math.random(-8, 8)))
+                hum:MoveTo(root.Position + Vector3.new(math.random(-7, 7), 0, math.random(-7, 7)))
             end
-            
-            task.wait(0.2)
+
+            task.wait(0.15)
         end
     end
 end)
 
 -- Stuck Detection (Enhanced)
 task.spawn(function()
-    while task.wait(1) do
-        if State.npcWalking and not State.replaying then
-            local moved = (hrp.Position - lastPos).Magnitude
-            
-            if moved < 1 then
-                stuckTime = stuckTime + 1
+    while task.wait(0.9) do
+        if State.npc and not State.play then
+            local mov = (root.Position - lastP).Magnitude
+
+            if mov < 0.8 then
+                stuckT = stuckT + 1
             else
-                stuckTime = 0
+                stuckT = math.max(0, stuckT - 1)
             end
-            
-            lastPos = hrp.Position
-            
-            -- Auto switch on long stuck
-            if Cfg.autoSwitchStuck and stuckTime > 300 and #recordData > 0 then
-                State.npcWalking = false
-                State.replaying = true
-                State.loopReplay = true
-                if npcToggle then pcall(function() npcToggle:Set(false) end) end
-                Rayfield:Notify({Title = "Auto-Switched", Content = "Using replay", Duration = 3})
-                stuckTime = 0
+
+            lastP = root.Position
+
+            -- Auto switch (5 min)
+            if C.autoSwitch and stuckT > 300 and #rec > 0 then
+                State.npc = false
+                State.play = true
+                State.loop = true
+                if npcT then pcall(function() npcT:Set(false) end) end
+                Rayfield:Notify({Title = "🔄 Switched", Content = "Using replay", Duration = 3})
+                stuckT = 0
             end
-            
+
             -- Handle stuck
-            if stuckTime >= Cfg.stuckCheck and stuckTime < Cfg.stuckTP then
+            if stuckT >= C.stuckT and stuckT < C.stuckTP then
                 hum.Jump = true
-                local rnd = Vector3.new(math.random(-8, 8), 0, math.random(-8, 8))
-                hum:MoveTo(hrp.Position + rnd)
-            elseif stuckTime >= Cfg.stuckTP and Cfg.teleportOnStuck then
+                local rnd = Vector3.new(math.random(-9, 9), 0, math.random(-9, 9))
+                hum:MoveTo(root.Position + rnd)
+            elseif stuckT >= C.stuckTP and C.tpStuck then
                 local found = false
-                for i = 1, 12 do
-                    local try = randomPos(Cfg.tpRadius)
-                    local ok, ground = isStandable(try)
+                for i = 1, 15 do
+                    local try = rndPos(C.tpR)
+                    local ok, gnd = canStand(try)
                     if ok then
-                        hrp.CFrame = CFrame.new(ground + Vector3.new(0, 3, 0))
+                        root.CFrame = CFrame.new(gnd + Vector3.new(0, 3, 0))
                         found = true
                         break
                     end
                 end
-                if not found and #safePositions > 0 then
-                    hrp.CFrame = CFrame.new(safePositions[math.random(#safePositions)])
+                if not found and #safeP > 0 then
+                    root.CFrame = CFrame.new(safeP[math.random(#safeP)])
                 end
-                stuckTime = 0
+                stuckT = 0
             end
         end
     end
@@ -696,87 +799,87 @@ end)
 
 -- AFK System (Enhanced)
 task.spawn(function()
-    while task.wait(8) do
-        if State.afkEnabled then
-            local idle = tick() - lastInputTime
-            local threshold = Cfg.afkMinutes * 60
-            
-            if idle >= threshold and not State.afkActive then
-                State.afkActive = true
-                createHL()
-                
-                local mode = Cfg.afkMode
+    while task.wait(6) do
+        if State.afk then
+            local idle = tick() - lastIn
+            local thresh = C.afkMin * 60
+
+            if idle >= thresh and not State.afkOn then
+                State.afkOn = true
+                makeHL()
+
+                local mode = C.afkMode
                 if mode == "Random" then
                     mode = math.random() > 0.5 and "Replay" or "NPC Walk"
                 end
-                
-                if mode == "Replay" and #recordData > 0 then
-                    State.replaying = true
-                    State.loopReplay = true
-                    State.npcWalking = false
-                    if npcToggle then pcall(function() npcToggle:Set(false) end) end
+
+                if mode == "Replay" and #rec > 0 then
+                    State.play = true
+                    State.loop = true
+                    State.npc = false
+                    if npcT then pcall(function() npcT:Set(false) end) end
                 else
-                    State.npcWalking = true
-                    State.replaying = false
-                    if npcToggle then pcall(function() npcToggle:Set(true) end) end
+                    State.npc = true
+                    State.play = false
+                    if npcT then pcall(function() npcT:Set(true) end) end
                 end
-                
-                Rayfield:Notify({Title = "AFK Active", Content = mode, Duration = 3})
-            elseif idle < threshold and State.afkActive then
-                State.afkActive = false
-                removeHL()
+
+                Rayfield:Notify({Title = "🌙 AFK Active", Content = mode, Duration = 3})
+            elseif idle < thresh and State.afkOn then
+                State.afkOn = false
+                rmHL()
             end
         end
     end
 end)
 
--- Anti-Kick (Camera Movement)
+-- Anti-Kick (Camera)
 task.spawn(function()
-    while task.wait(120) do
-        if Cfg.antiKick and (State.afkActive or State.npcWalking or State.replaying) then
-            local cam = workspace.CurrentCamera
+    while task.wait(100) do
+        if C.antiKick and (State.afkOn or State.npc or State.play) then
+            local cam = WS.CurrentCamera
             if cam then
-                cam.CFrame = cam.CFrame * CFrame.Angles(0, math.rad(0.1), 0)
+                cam.CFrame = cam.CFrame * CFrame.Angles(0, math.rad(0.08), 0)
             end
         end
     end
 end)
 
--- Input Detection (Optimized)
+-- Input Detection
 UIS.InputBegan:Connect(function(inp)
     if inp.UserInputType == Enum.UserInputType.Keyboard or 
        inp.UserInputType == Enum.UserInputType.MouseButton1 or
        inp.UserInputType == Enum.UserInputType.Touch then
-        lastInputTime = tick()
-        if State.afkActive then
-            State.afkActive = false
-            removeHL()
+        lastIn = tick()
+        if State.afkOn then
+            State.afkOn = false
+            rmHL()
         end
     end
 end)
 
--- Auto-Reply System
-local function handleReply(p, msg)
-    if not State.autoReply or not (State.npcWalking or State.replaying) or p == plr then return end
-    
-    local low = string.lower(msg)
-    for _, kw in ipairs(KEYWORDS) do
+-- Auto-Reply (Enhanced)
+local function handleReply(p, m)
+    if not State.reply or not (State.npc or State.play) or p == plr then return end
+
+    local low = string.lower(m)
+    for _, kw in ipairs(KW) do
         if string.find(low, kw) then
-            task.delay(math.random(1, 2), function()
-                sendMsg(REPLIES[math.random(#REPLIES)])
+            task.delay(math.random(1, 3), function()
+                msg(REP[math.random(#REP)])
             end)
             break
         end
     end
 end
 
-for _, p in ipairs(Players:GetPlayers()) do
+for _, p in ipairs(Plrs:GetPlayers()) do
     if p ~= plr then
         p.Chatted:Connect(function(m) handleReply(p, m) end)
     end
 end
 
-Players.PlayerAdded:Connect(function(p)
+Plrs.PlayerAdded:Connect(function(p)
     if p ~= plr then
         p.Chatted:Connect(function(m) handleReply(p, m) end)
     end
@@ -784,34 +887,24 @@ end)
 
 -- Status Updates (Optimized)
 task.spawn(function()
-    while task.wait(0.4) do
-        local recS = State.recording and "🔴 Recording" or (State.replaying and (State.loopReplay and "🔁 Loop" or "▶️ Play") or "🟢 Ready")
-        local recT = State.recording and math.floor(tick() - recordStart) or 0
-        pcall(function() recordStatus:Set("Status: " .. recS .. " | Frames: " .. #recordData .. " | Time: " .. recT .. "s") end)
-        
-        local npcS = State.npcWalking and "🟢 Active" or "🔴 Off"
-        pcall(function() npcStatus:Set("Status: " .. npcS .. " | Stuck: " .. stuckTime .. "s") end)
-        
-        local afkS = State.afkEnabled and "🟢 On" or "🔴 Off"
-        afkS = afkS .. (State.afkActive and " | Active: Yes ⚠️" or " | Active: No")
-        pcall(function() afkStatus:Set("Status: " .. afkS) end)
+    while task.wait(0.35) do
+        local recS = State.rec and "🔴 Rec" or (State.play and (State.loop and "🔁 Loop" or "▶️ Play") or "🟢 Ready")
+        local recTm = State.rec and math.floor(tick() - recT) or 0
+        pcall(function() recL:Set("Status: " .. recS .. " | Frames: " .. #rec .. " | Time: " .. recTm .. "s") end)
+
+        local npcS = State.npc and "🟢 On" or "🔴 Off"
+        pcall(function() npcL:Set("Status: " .. npcS .. " | Stuck: " .. stuckT .. "s") end)
+
+        local afkS = State.afk and "🟢 On" or "🔴 Off"
+        afkS = afkS .. (State.afkOn and " | Active: ⚠️ Yes" or " | Active: No")
+        pcall(function() afkL:Set("Status: " .. afkS) end)
     end
 end)
 
--- Character Respawn Handler
+-- Character Respawn
 plr.CharacterAdded:Connect(function(newChar)
-    updateChar()
-    State.recording = false
-    State.replaying = false
-    State.loopReplay = false
-    State.afkActive = false
-    removeHL()
-    rayParams.FilterDescendantsInstances = {char}
-    lastPos = hrp.Position
-    stuckTime = 0
-    lastInputTime = tick()
-    safePositions = {}
-end)
-
-Rayfield:LoadConfiguration()
-Rayfield:Notify({Title = "Aura Farm v3.0", Content = "Loaded Successfully!", Duration = 3})
+    refreshChar()
+    State.rec = false
+    State.play = false
+    State.loop = false
+    State.afk
