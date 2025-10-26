@@ -907,4 +907,14 @@ plr.CharacterAdded:Connect(function(newChar)
     State.rec = false
     State.play = false
     State.loop = false
-    State.afk
+    State.afk = false
+    rmHL()
+    ray.FilterDescendantsInstances = {newChar}
+    lastP = root.Position
+    stuckT = 0
+    lastIn = tick()
+    safeP = {}
+end)
+
+Rayfield:LoadConfiguration()
+Rayfield:Notify({Title = "Aura Farm v4.0", Content = "Loaded Successfully!", Duration = 3})
