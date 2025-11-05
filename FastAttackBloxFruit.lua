@@ -3,17 +3,6 @@
 -- Optimized & Enhanced Version
 -- ============================================
 
--- Utility function
-function nHgshEJpoqgHTBEJZ(c)
-    local tab = {}
-    for i = 1, #c do
-        local x = string.len(c[i])
-        local y = string.char(x)
-        table.insert(tab, y)
-    end
-    return table.concat(tab)
-end
-
 -- ============================================
 -- CONFIGURATION SETTINGS
 -- ============================================
@@ -205,11 +194,10 @@ Module.FastAttack = (function()
             and character:FindFirstChild("Humanoid") 
             and character.Humanoid.Health > 0
     end
-    
+
     local function IsBoss(enemy)
         return enemy 
-            and enemy:FindFirstChild("Humanoid") 
-            and enemy.Humanoid:FindFirstChild("IsBoss")
+            and string.find(enemy.Name, "Boss")
     end
     
     local function GetDistance(position)
