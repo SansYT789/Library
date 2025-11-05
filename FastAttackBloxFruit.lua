@@ -1,464 +1,149 @@
--- ============================================
--- FAST ATTACK SYSTEM V2.0
--- Optimized & Enhanced Version
--- ============================================
+--// ============================================
+--// FAST ATTACK SYSTEM - STABLE EDITION
+--// ============================================
 
--- ============================================
--- CONFIGURATION SETTINGS
--- ============================================
 _G.FastAttackConfig = _G.FastAttackConfig or {
-    -- Core Settings
     Enabled = true,
     AutoClick = true,
-    
-    -- Performance Settings
     ClickDelay = 0,
     AttackDelay = 0,
     UpdateRate = 0.01,
-    
-    -- Distance Settings
     MaxAttackDistance = 200000,
     OptimalDistance = 50,
-    
-    -- Target Settings
     AttackMobs = true,
-    AttackPlayers = false,
+    AttackPlayers = true,
     AttackBosses = true,
     PrioritizeBosses = true,
-    
-    -- Safety Settings
     CheckAlive = true,
     CheckEquipped = true,
     IgnoreGuns = true,
-    
-    -- Advanced Settings
     MultiTarget = true,
     MaxTargets = 10,
-    UseFastMode = true,
     UseRenderStepped = false,
-    
-    -- Debug Settings
-    DebugMode = false,
-    ShowWarnings = true,
-    LogErrors = true
+    DebugMode = false
 }
 
 local Config = _G.FastAttackConfig
-
--- ============================================
--- INITIALIZATION
--- ============================================
-if not Config.Enabled then
-    warn("Fast Attack System is disabled")
-    return
-end
-
-local _ENV = (getgenv or getrenv or getfenv)()
-
--- ============================================
--- UTILITY FUNCTIONS
--- ============================================
-local function SafeWaitForChild(parent, childName, timeout)
-    timeout = timeout or 10
-    local success, result = pcall(function()
-        return parent:WaitForChild(childName, timeout)
-    end)
-    
-    if not success or not result then
-        if Config.ShowWarnings then
-            warn(string.format("Failed to find child: %s", childName))
-        end
-        return nil
+local Services = setmetatable({}, {
+    __index = function(_, service)
+        return game:GetService(service)
     end
-    
-    return result
-end
-
-local function WaitChilds(path, ...)
-    local last = path
-    for _, child in {...} do
-        last = last:FindFirstChild(child) or SafeWaitForChild(last, child)
-        if not last then
-            break
-        end
-    end
-    return last
-end
-
-local function DebugLog(message)
-    if Config.DebugMode then
-        print(string.format("[FastAttack Debug] %s", message))
-    end
-end
-
-local function ErrorLog(message)
-    if Config.LogErrors then
-        warn(string.format("[FastAttack Error] %s", message))
-    end
-end
-
--- ============================================
--- SERVICE INITIALIZATION
--- ============================================
-local Services = {
-    VirtualInput = game:GetService("VirtualInputManager"),
-    Collection = game:GetService("CollectionService"),
-    ReplicatedStorage = game:GetService("ReplicatedStorage"),
-    Teleport = game:GetService("TeleportService"),
-    RunService = game:GetService("RunService"),
-    Players = game:GetService("Players")
-}
-
+})
 local Player = Services.Players.LocalPlayer
+if not Player then return end
 
-if not Player then
-    ErrorLog("Local player not found")
-    return
+local Remotes = Services.ReplicatedStorage:FindFirstChild("Remotes")
+local RegisterAttack = Remotes and Remotes:FindFirstChild("RE/RegisterAttack")
+local RegisterHit = Remotes and Remotes:FindFirstChild("RE/RegisterHit")
+local Enemies = workspace:FindFirstChild("Enemies")
+local Characters = workspace:FindFirstChild("Characters")
+
+local function IsAlive(model)
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    return hum and hum.Health > 0
 end
 
--- ============================================
--- GAME OBJECTS
--- ============================================
-local Remotes = SafeWaitForChild(Services.ReplicatedStorage, "Remotes")
-if not Remotes then
-    ErrorLog("Remotes not found")
-    return
+local function GetDistance(pos)
+    local hrp = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+    return hrp and (hrp.Position - pos).Magnitude or math.huge
 end
 
-local GameObjects = {
-    Validator = SafeWaitForChild(Remotes, "Validator"),
-    CommF = SafeWaitForChild(Remotes, "CommF_"),
-    CommE = SafeWaitForChild(Remotes, "CommE"),
-    ChestModels = SafeWaitForChild(workspace, "ChestModels"),
-    WorldOrigin = SafeWaitForChild(workspace, "_WorldOrigin"),
-    Characters = SafeWaitForChild(workspace, "Characters"),
-    Enemies = SafeWaitForChild(workspace, "Enemies"),
-    Map = SafeWaitForChild(workspace, "Map")
+local function IsBoss(enemy)
+    return enemy and string.find(enemy.Name, "Boss")
+end
+
+local function IsValidTarget(enemy)
+    if not enemy or not IsAlive(enemy) then return false end
+    if enemy == Player.Character then return false end
+    local head = enemy:FindFirstChild("Head")
+    if not head then return false end
+    if GetDistance(head.Position) > Config.MaxAttackDistance then return false end
+    return true
+end
+
+local function CollectTargets()
+    local targets = {}
+    local function scan(folder)
+        for _, e in pairs(folder:GetChildren()) do
+            if #targets >= Config.MaxTargets then break end
+            if IsValidTarget(e) then
+                local head = e:FindFirstChild("Head")
+                if head then table.insert(targets, {e, head}) end
+            end
+        end
+    end
+    if Config.AttackMobs and Enemies then scan(Enemies) end
+    if Config.AttackPlayers and Characters then scan(Characters) end
+    if Config.PrioritizeBosses then
+        table.sort(targets, function(a,b)
+            local A,B=IsBoss(a[1]),IsBoss(b[1])
+            if A~=B then return A and not B end
+            return GetDistance(a[2].Position)<GetDistance(b[2].Position)
+        end)
+    end
+    return targets
+end
+
+local FastAttack = {
+    Active = false,
+    LastTick = 0,
+    Connection = nil
 }
 
-if GameObjects.WorldOrigin then
-    GameObjects.EnemySpawns = SafeWaitForChild(GameObjects.WorldOrigin, "EnemySpawns")
-    GameObjects.Locations = SafeWaitForChild(GameObjects.WorldOrigin, "Locations")
+function FastAttack:AttackOnce()
+    if not Config.Enabled or not Player.Character then return end
+    if tick() - self.LastTick < Config.AttackDelay then return end
+    self.LastTick = tick()
+
+    local tool = Player.Character:FindFirstChildOfClass("Tool")
+    if Config.CheckEquipped and (not tool or (Config.IgnoreGuns and tool.ToolTip == "Gun")) then return end
+
+    local targets = CollectTargets()
+    if #targets == 0 then return end
+    local base = targets[1][2]
+
+    local success, err = pcall(function()
+        if RegisterAttack then RegisterAttack:FireServer(Config.ClickDelay) end
+        if RegisterHit then RegisterHit:FireServer(base, targets) end
+    end)
+    if not success then warn("[FastAttack Error]", err) end
 end
 
--- ============================================
--- NET MODULES
--- ============================================
-local Modules = SafeWaitForChild(Services.ReplicatedStorage, "Modules")
-local Net = Modules and SafeWaitForChild(Modules, "Net")
+function FastAttack:Start()
+    if self.Active then return end
+    self.Active = true
+    print("[FastAttack] Started.")
 
-if not Net then
-    ErrorLog("Net module not found")
-    return
+    local RS = Config.UseRenderStepped and Services.RunService.RenderStepped or Services.RunService.Heartbeat
+
+    self.Connection = RS:Connect(function()
+        if not Config.Enabled then return end
+        if not IsAlive(Player.Character or {}) then
+            -- nếu chết thì đợi hồi sinh rồi chạy lại
+            repeat Services.RunService.Heartbeat:Wait() until IsAlive(Player.Character or {})
+        end
+        pcall(function() self:AttackOnce() end)
+    end)
 end
 
-local RegisterAttack = SafeWaitForChild(Net, "RE/RegisterAttack")
-local RegisterHit = SafeWaitForChild(Net, "RE/RegisterHit")
+function FastAttack:Stop()
+    if not self.Active then return end
+    self.Active = false
+    if self.Connection then
+        self.Connection:Disconnect()
+        self.Connection = nil
+    end
+    print("[FastAttack] Stopped.")
+end
 
--- ============================================
--- COMPATIBILITY FUNCTIONS
--- ============================================
-local sethiddenproperty = sethiddenproperty or function(...) return ... end
-local setupvalue = setupvalue or (debug and debug.setupvalue)
-local getupvalue = getupvalue or (debug and debug.getupvalue)
-
--- ============================================
--- FAST ATTACK MODULE
--- ============================================
-local Module = {}
-
-Module.FastAttack = (function()
-    -- Return existing instance if available
-    if _ENV.rz_FastAttack then
-        DebugLog("Using existing FastAttack instance")
-        return _ENV.rz_FastAttack
-    end
-    
-    local FastAttack = {
-        Active = false,
-        LastAttackTick = 0,
-        TargetCache = {},
-        Statistics = {
-            TotalAttacks = 0,
-            TotalHits = 0,
-            LastUpdate = tick()
-        }
-    }
-    
-    -- ========================================
-    -- HELPER FUNCTIONS
-    -- ========================================
-    local function IsAlive(character)
-        if not Config.CheckAlive then return true end
-        return character 
-            and character:FindFirstChild("Humanoid") 
-            and character.Humanoid.Health > 0
-    end
-
-    local function IsBoss(enemy)
-        return enemy 
-            and string.find(enemy.Name, "Boss")
-    end
-    
-    local function GetDistance(position)
-        return Player:DistanceFromCharacter(position)
-    end
-    
-    local function IsValidTarget(enemy)
-        if not enemy or not IsAlive(enemy) then
-            return false
-        end
-        
-        if enemy == Player.Character then
-            return false
-        end
-        
-        local head = enemy:FindFirstChild("Head")
-        if not head then
-            return false
-        end
-        
-        local distance = GetDistance(head.Position)
-        if distance > Config.MaxAttackDistance then
-            return false
-        end
-        
-        return true
-    end
-    
-    local function SortByPriority(a, b)
-        local aIsBoss = IsBoss(a[1])
-        local bIsBoss = IsBoss(b[1])
-        
-        if Config.PrioritizeBosses then
-            if aIsBoss and not bIsBoss then return true end
-            if bIsBoss and not aIsBoss then return false end
-        end
-        
-        local aDist = GetDistance(a[2].Position)
-        local bDist = GetDistance(b[2].Position)
-        
-        return aDist < bDist
-    end
-    
-    -- ========================================
-    -- TARGET PROCESSING
-    -- ========================================
-    local function ProcessEnemies(enemyList, folder, shouldAttack)
-        if not folder or not shouldAttack then return nil end
-        
-        local basePart = nil
-        local processed = 0
-        
-        for _, enemy in folder:GetChildren() do
-            if Config.MultiTarget and processed >= Config.MaxTargets then
-                break
-            end
-            
-            if IsValidTarget(enemy) then
-                local head = enemy:FindFirstChild("Head")
-                if head then
-                    table.insert(enemyList, {enemy, head})
-                    basePart = basePart or head
-                    processed = processed + 1
-                    
-                    DebugLog(string.format("Target added: %s (Distance: %.2f)", 
-                        enemy.Name, GetDistance(head.Position)))
-                end
-            end
-        end
-        
-        return basePart
-    end
-    
-    function FastAttack:GatherTargets()
-        local targets = {}
-        local primaryTarget = nil
-        
-        -- Process mobs
-        if Config.AttackMobs and GameObjects.Enemies then
-            primaryTarget = ProcessEnemies(targets, GameObjects.Enemies, true)
-        end
-        
-        -- Process players
-        if Config.AttackPlayers and GameObjects.Characters then
-            local playerTarget = ProcessEnemies(targets, GameObjects.Characters, true)
-            primaryTarget = primaryTarget or playerTarget
-        end
-        
-        -- Sort by priority
-        if #targets > 1 then
-            table.sort(targets, SortByPriority)
-        end
-        
-        return primaryTarget, targets
-    end
-    
-    -- ========================================
-    -- ATTACK FUNCTIONS
-    -- ========================================
-    function FastAttack:ExecuteAttack(basePart, targets)
-        if not basePart or #targets == 0 then
-            return false
-        end
-        
-        if not RegisterAttack or not RegisterHit then
-            ErrorLog("Attack remotes not available")
-            return false
-        end
-        
-        local success, error = pcall(function()
-            RegisterAttack:FireServer(Config.ClickDelay)
-            RegisterHit:FireServer(basePart, targets)
-        end)
-        
-        if success then
-            self.Statistics.TotalAttacks = self.Statistics.TotalAttacks + 1
-            self.Statistics.TotalHits = self.Statistics.TotalHits + #targets
-            DebugLog(string.format("Attack executed: %d targets", #targets))
-            return true
-        else
-            ErrorLog(string.format("Attack failed: %s", tostring(error)))
-            return false
-        end
-    end
-    
-    function FastAttack:PerformAttack()
-        -- Check rate limiting
-        local currentTick = tick()
-        if currentTick - self.LastAttackTick < Config.AttackDelay then
-            return
-        end
-        self.LastAttackTick = currentTick
-        
-        -- Check equipment
-        if Config.CheckEquipped then
-            local equipped = IsAlive(Player.Character) 
-                and Player.Character:FindFirstChildOfClass("Tool")
-            
-            if not equipped then
-                return
-            end
-            
-            if Config.IgnoreGuns and equipped.ToolTip == "Gun" then
-                return
-            end
-        end
-        
-        -- Gather and attack targets
-        local primaryTarget, targets = self:GatherTargets()
-        
-        if #targets > 0 then
-            self:ExecuteAttack(primaryTarget, targets)
-        end
-    end
-    
-    -- ========================================
-    -- MAIN LOOP
-    -- ========================================
-    function FastAttack:Start()
-        if self.Active then
-            return
-        end
-        
-        self.Active = true
-        DebugLog("Fast Attack System started")
-        
-        local updateEvent = Config.UseRenderStepped 
-            and Services.RunService.RenderStepped 
-            or Services.RunService.Heartbeat
-        
-        self.Connection = updateEvent:Connect(function()
-            if Config.Enabled and Config.AutoClick then
-                self:PerformAttack()
-            end
-        end)
-    end
-    
-    function FastAttack:Stop()
-        if not self.Active then
-            return
-        end
-        
-        self.Active = false
-        
-        if self.Connection then
-            self.Connection:Disconnect()
-            self.Connection = nil
-        end
-        
-        DebugLog("Fast Attack System stopped")
-    end
-    
-    function FastAttack:GetStatistics()
-        return {
-            TotalAttacks = self.Statistics.TotalAttacks,
-            TotalHits = self.Statistics.TotalHits,
-            AverageHitsPerAttack = self.Statistics.TotalAttacks > 0 
-                and (self.Statistics.TotalHits / self.Statistics.TotalAttacks) 
-                or 0,
-            Uptime = tick() - self.Statistics.LastUpdate
-        }
-    end
-    
-    function FastAttack:ResetStatistics()
-        self.Statistics = {
-            TotalAttacks = 0,
-            TotalHits = 0,
-            LastUpdate = tick()
-        }
-    end
-    
-    -- ========================================
-    -- AUTO START
-    -- ========================================
-    FastAttack:Start()
-    
-    -- Cache globally
-    _ENV.rz_FastAttack = FastAttack
-    
-    return FastAttack
-end)()
-
--- ============================================
--- GLOBAL API
--- ============================================
+FastAttack:Start()
 _G.FastAttackAPI = {
     Toggle = function(state)
         Config.Enabled = state
-        DebugLog(string.format("System %s", state and "enabled" or "disabled"))
+        if state then FastAttack:Start() else FastAttack:Stop() end
     end,
-    
-    SetDistance = function(distance)
-        Config.MaxAttackDistance = distance
-        DebugLog(string.format("Max distance set to %d", distance))
-    end,
-    
-    SetDelay = function(delay)
-        Config.AttackDelay = delay
-        DebugLog(string.format("Attack delay set to %.3f", delay))
-    end,
-    
-    GetStats = function()
-        return Module.FastAttack:GetStatistics()
-    end,
-    
-    ResetStats = function()
-        Module.FastAttack:ResetStatistics()
-    end,
-    
-    GetConfig = function()
-        return Config
-    end,
-    
-    UpdateConfig = function(newConfig)
-        for key, value in pairs(newConfig) do
-            if Config[key] ~= nil then
-                Config[key] = value
-            end
-        end
-        DebugLog("Configuration updated")
-    end
+    SetDelay = function(v) Config.AttackDelay = v end,
+    SetDistance = function(v) Config.MaxAttackDistance = v end
 }
 
-return Module
+return FastAttack
