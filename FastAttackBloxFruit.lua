@@ -24,8 +24,8 @@ local Config = {
 
     -- Ghost Mob Detection
     EnableGhostDetection = true,
-    GhostCheckInterval = 3, -- Check every 3 seconds
-    GhostHealthThreshold = 0.5, -- If health doesn't drop by 0.5% in interval
+    GhostCheckInterval = 4, -- Check every 4 seconds (increased)
+    GhostHealthThreshold = 1, -- If health doesn't drop by 1% in interval (more lenient)
     
     -- Performance Optimization
     UseRenderStepped = false, -- Use Heartbeat for stability
@@ -126,13 +126,14 @@ function FastAttack:InitGhostTracking(enemy)
     if not self.Config.EnableGhostDetection then return end
     if not enemy or not enemy:FindFirstChild("Humanoid") then return end
     
-    local enemyId = tostring(enemy)
+    local enemyId = enemy.Name .. "_" .. tostring(enemy:GetDebugId())
     
     self.Cache.GhostMobs[enemyId] = {
         lastHealth = enemy.Humanoid.Health,
         lastCheckTime = tick(),
         attackCount = 0,
-        isGhost = false
+        isGhost = false,
+        enemy = enemy
     }
 end
 
@@ -140,7 +141,7 @@ function FastAttack:UpdateGhostTracking(enemy)
     if not self.Config.EnableGhostDetection then return false end
     if not enemy or not enemy:FindFirstChild("Humanoid") then return true end
     
-    local enemyId = tostring(enemy)
+    local enemyId = enemy.Name .. "_" .. tostring(enemy:GetDebugId())
     local ghostData = self.Cache.GhostMobs[enemyId]
     
     if not ghostData then
@@ -164,10 +165,10 @@ function FastAttack:UpdateGhostTracking(enemy)
         local healthDropPercent = (healthDrop / enemy.Humanoid.MaxHealth) * 100
         
         -- If attacked multiple times but health barely dropped, it's a ghost
-        if ghostData.attackCount > 5 and healthDropPercent < self.Config.GhostHealthThreshold then
+        if ghostData.attackCount > 8 and healthDropPercent < self.Config.GhostHealthThreshold then
             ghostData.isGhost = true
             self.Stats.GhostsDetected = self.Stats.GhostsDetected + 1
-            warn("Ghost mob detected: " .. enemy.Name)
+            warn("Ghost mob detected: " .. enemy.Name .. " (ID: " .. enemyId .. ")")
             return true
         end
         
@@ -182,8 +183,9 @@ end
 
 function FastAttack:IsGhostMob(enemy)
     if not self.Config.EnableGhostDetection then return false end
+    if not enemy then return false end
     
-    local enemyId = tostring(enemy)
+    local enemyId = enemy.Name .. "_" .. tostring(enemy:GetDebugId())
     local ghostData = self.Cache.GhostMobs[enemyId]
     
     return ghostData and ghostData.isGhost or false
@@ -192,10 +194,20 @@ end
 function FastAttack:CleanGhostCache()
     -- Clean up ghost cache periodically
     local currentTime = tick()
+    local toRemove = {}
+    
     for enemyId, data in pairs(self.Cache.GhostMobs) do
-        if currentTime - data.lastCheckTime > 30 then
-            self.Cache.GhostMobs[enemyId] = nil
+        -- Check if enemy still exists
+        local enemyExists = data.enemy and data.enemy:IsDescendantOf(workspace)
+        
+        -- Remove if: enemy deleted, or stale data (30s+), or ghost but enemy gone
+        if not enemyExists or (currentTime - data.lastCheckTime > 30) or (data.isGhost and not enemyExists) then
+            table.insert(toRemove, enemyId)
         end
+    end
+    
+    for _, id in ipairs(toRemove) do
+        self.Cache.GhostMobs[id] = nil
     end
 end
 
@@ -203,19 +215,24 @@ end
 function FastAttack:IsValidEnemy(enemy)
     if not enemy or enemy == char then return false end
     
-    -- Check if it's a ghost mob
-    if self:IsGhostMob(enemy) then return false end
-
+    -- Verify enemy still exists in workspace
+    if not enemy:IsDescendantOf(workspace) then return false end
+    
     local hum = enemy:FindFirstChild("Humanoid")
     local hrp = enemy:FindFirstChild("HumanoidRootPart")
     
     if not hum or not hrp then return false end
-    if hum.Health <= 0 then return false end
+    if hum.Health <= 0 or hum.Health > hum.MaxHealth then return false end
     
-    -- Additional health verification
-    if hum.MaxHealth > 0 and hum.Health >= hum.MaxHealth * 0.99 then
-        -- Likely freshly spawned, safe to attack
-        self:InitGhostTracking(enemy)
+    -- Check if it's a ghost mob AFTER basic validation
+    if self:IsGhostMob(enemy) then return false end
+    
+    -- Additional health verification - freshly spawned mobs are OK
+    if hum.Health >= hum.MaxHealth * 0.95 then
+        -- Fresh spawn, initialize tracking
+        if not self.Cache.GhostMobs[enemy.Name .. "_" .. tostring(enemy:GetDebugId())] then
+            self:InitGhostTracking(enemy)
+        end
     end
 
     local enemyPlayer = Players:GetPlayerFromCharacter(enemy)
@@ -225,8 +242,11 @@ function FastAttack:IsValidEnemy(enemy)
     if not isPlayer then
         if not self.Config.AttackMob then return false end
         
-        -- Verify mob is attackable
-        if not enemy:IsDescendantOf(workspace) then return false end
+        -- Additional mob checks
+        if not enemy.Parent then return false end
+        
+        -- Check if mob has proper name (not empty or weird)
+        if enemy.Name == "" or #enemy.Name < 2 then return false end
         
         return true
     end
@@ -238,12 +258,12 @@ function FastAttack:IsValidEnemy(enemy)
     if not enemyChar then return false end
 
     -- Team check
-    if enemyPlayer and enemyPlayer.Team == player.Team then return false end
+    if enemyPlayer and enemyPlayer.Team and player.Team and enemyPlayer.Team == player.Team then return false end
 
-    -- Cache player GUI checks
+    -- Cache player GUI checks with shorter duration
     local cacheKey = enemy.Name
     if self.Cache.PlayerStates[cacheKey] and 
-       tick() - self.Cache.PlayerStates[cacheKey].time < 1 then
+       tick() - self.Cache.PlayerStates[cacheKey].time < 0.5 then
         return self.Cache.PlayerStates[cacheKey].valid
     end
 
@@ -333,27 +353,36 @@ function FastAttack:ExecuteAttack(enemies)
     if #enemies == 0 then return false end
     if not RegisterAttack or not RegisterHit then return false end
 
-    local attackData = {}
+    -- Double-check primary target is still valid
     local primaryTarget = enemies[1]
+    if not primaryTarget.enemy or not primaryTarget.enemy:IsDescendantOf(workspace) then
+        return false
+    end
+
+    local attackData = {}
     
-    -- Build attack data
+    -- Build attack data with validation
     for i, data in ipairs(enemies) do
-        table.insert(attackData, {data.enemy, data.head})
-        
-        -- Update ghost tracking
-        if self.Config.EnableGhostDetection then
-            self:UpdateGhostTracking(data.enemy)
+        -- Verify enemy still exists and is valid
+        if data.enemy and data.enemy:IsDescendantOf(workspace) and data.head then
+            local hum = data.enemy:FindFirstChild("Humanoid")
+            if hum and hum.Health > 0 then
+                table.insert(attackData, {data.enemy, data.head})
+                
+                -- Update ghost tracking
+                if self.Config.EnableGhostDetection then
+                    self:UpdateGhostTracking(data.enemy)
+                end
+            end
         end
     end
+    
+    -- Must have at least 1 valid target
+    if #attackData == 0 then return false end
 
     -- Execute attack with error handling
     local success, err = pcall(function()
         RegisterAttack:FireServer(self.Config.ClickDelay)
-        
-        if self.Config.VerifyHitRegistration then
-            task.wait(0.02) -- Small delay to ensure registration
-        end
-        
         RegisterHit:FireServer(primaryTarget.head, attackData)
     end)
     
