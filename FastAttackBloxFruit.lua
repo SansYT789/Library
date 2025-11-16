@@ -1,5 +1,5 @@
--- Enhanced Fast Attack System with Advanced Configuration
--- Optimized for maximum performance and reaction time
+-- Enhanced Fast Attack System v2.0
+-- Advanced ghost mob detection and optimized attack validation
 
 local _ENV = (getgenv or getrenv or getfenv)()
 
@@ -9,23 +9,29 @@ local Config = {
     AttackNearest = true,
     AttackMob = true,
     AttackPlayers = false,
-    
+
     -- Performance Settings
-    FastAttackDelay = 0.1, -- Reduced from default
+    FastAttackDelay = 0.08,
     ClickDelay = 0,
     AttackDistance = 2000,
-    MaxTargets = 10, -- Limit targets per attack for performance
-    
+    MaxTargets = 8,
+
     -- Advanced Options
     PriorityMode = "Nearest", -- "Nearest", "Lowest HP", "Highest HP"
-    UseSmartDelay = true, -- Adaptive delay based on ping
-    PreemptiveAttack = true, -- Attack before full validation
-    CacheDuration = 0.1, -- Cache enemy positions
+    UseSmartDelay = true,
+    PreemptiveAttack = false, -- Disabled for better stability
+    CacheDuration = 0.05,
+
+    -- Ghost Mob Detection
+    EnableGhostDetection = true,
+    GhostCheckInterval = 3, -- Check every 3 seconds
+    GhostHealthThreshold = 0.5, -- If health doesn't drop by 0.5% in interval
     
     -- Performance Optimization
-    UseRenderStepped = true, -- Use RenderStepped for faster reactions
-    SkipDeadCheck = true, -- Skip extra checks on dead enemies
-    BatchAttacks = true, -- Send attacks in batches
+    UseRenderStepped = false, -- Use Heartbeat for stability
+    SkipDeadCheck = false,
+    BatchAttacks = true,
+    VerifyHitRegistration = true, -- Ensure hits register
 }
 
 -- ==================== SERVICES ====================
@@ -39,6 +45,7 @@ local char = player.Character or player.CharacterAdded:Wait()
 
 -- ==================== UTILITY FUNCTIONS ====================
 local function SafeWaitForChild(parent, childName, timeout)
+    if not parent then return nil end
     local success, result = pcall(function()
         return parent:WaitForChild(childName, timeout or 5)
     end)
@@ -51,20 +58,32 @@ end
 
 -- ==================== WORKSPACE REFERENCES ====================
 local Remotes = SafeWaitForChild(RS, "Remotes")
-if not Remotes then warn("Remotes not found!") return end
+if not Remotes then 
+    warn("Remotes not found! Fast Attack cannot initialize.") 
+    return 
+end
 
 local Modules = SafeWaitForChild(RS, "Modules")
-local Net = SafeWaitForChild(Modules, "Net")
+local Net = Modules and SafeWaitForChild(Modules, "Net")
+
+if not Net then
+    warn("Net module not found! Fast Attack cannot initialize.")
+    return
+end
 
 local RegisterAttack = SafeWaitForChild(Net, "RE/RegisterAttack")
 local RegisterHit = SafeWaitForChild(Net, "RE/RegisterHit")
 
-local Enemies = SafeWaitForChild(workspace, "Enemies")
-local Characters = SafeWaitForChild(workspace, "Characters")
+if not RegisterAttack or not RegisterHit then
+    warn("Attack remotes not found! Fast Attack cannot initialize.")
+    return
+end
+
+local Enemies = workspace:FindFirstChild("Enemies")
+local Characters = workspace:FindFirstChild("Characters")
 
 -- ==================== FAST ATTACK MODULE ====================
 if _ENV.FastAttackSkibidi then 
-    -- Update existing instance
     local existing = _ENV.FastAttackSkibidi
     existing.Config = Config
     return existing
@@ -75,92 +94,169 @@ local FastAttack = {
     Cache = {
         Enemies = {},
         LastUpdate = 0,
-        PlayerStates = {}
+        PlayerStates = {},
+        GhostMobs = {} -- Track ghost mobs
     },
     Stats = {
         AttacksPerSecond = 0,
         LastAttackTime = 0,
-        TotalAttacks = 0
-    }
+        TotalAttacks = 0,
+        GhostsDetected = 0
+    },
+    Running = false,
+    Connection = nil
 }
 
 -- ==================== PERFORMANCE OPTIMIZATIONS ====================
 local sethiddenproperty = sethiddenproperty or function(...) return ... end
-local IsAlive = function(character)
+
+local function IsAlive(character)
     if not character then return false end
     local hum = character:FindFirstChild("Humanoid")
     return hum and hum.Health > 0
 end
 
-local GetDistance = function(pos)
+local function GetDistance(pos)
     if not char or not char:FindFirstChild("HumanoidRootPart") then return math.huge end
     return (char.HumanoidRootPart.Position - pos).Magnitude
 end
 
--- ==================== SMART CACHING SYSTEM ====================
-function FastAttack:UpdateCache()
-    local currentTime = tick()
-    if currentTime - self.Cache.LastUpdate < self.Config.CacheDuration then
-        return self.Cache.Enemies
+-- ==================== GHOST MOB DETECTION ====================
+function FastAttack:InitGhostTracking(enemy)
+    if not self.Config.EnableGhostDetection then return end
+    if not enemy or not enemy:FindFirstChild("Humanoid") then return end
+    
+    local enemyId = tostring(enemy)
+    
+    self.Cache.GhostMobs[enemyId] = {
+        lastHealth = enemy.Humanoid.Health,
+        lastCheckTime = tick(),
+        attackCount = 0,
+        isGhost = false
+    }
+end
+
+function FastAttack:UpdateGhostTracking(enemy)
+    if not self.Config.EnableGhostDetection then return false end
+    if not enemy or not enemy:FindFirstChild("Humanoid") then return true end
+    
+    local enemyId = tostring(enemy)
+    local ghostData = self.Cache.GhostMobs[enemyId]
+    
+    if not ghostData then
+        self:InitGhostTracking(enemy)
+        return false
     end
     
-    self.Cache.Enemies = {}
-    self.Cache.LastUpdate = currentTime
-    return self.Cache.Enemies
+    -- Check if already marked as ghost
+    if ghostData.isGhost then return true end
+    
+    local currentTime = tick()
+    local timeDiff = currentTime - ghostData.lastCheckTime
+    
+    -- Update attack count
+    ghostData.attackCount = ghostData.attackCount + 1
+    
+    -- Check every interval
+    if timeDiff >= self.Config.GhostCheckInterval then
+        local currentHealth = enemy.Humanoid.Health
+        local healthDrop = ghostData.lastHealth - currentHealth
+        local healthDropPercent = (healthDrop / enemy.Humanoid.MaxHealth) * 100
+        
+        -- If attacked multiple times but health barely dropped, it's a ghost
+        if ghostData.attackCount > 5 and healthDropPercent < self.Config.GhostHealthThreshold then
+            ghostData.isGhost = true
+            self.Stats.GhostsDetected = self.Stats.GhostsDetected + 1
+            warn("Ghost mob detected: " .. enemy.Name)
+            return true
+        end
+        
+        -- Reset tracking for next interval
+        ghostData.lastHealth = currentHealth
+        ghostData.lastCheckTime = currentTime
+        ghostData.attackCount = 0
+    end
+    
+    return false
+end
+
+function FastAttack:IsGhostMob(enemy)
+    if not self.Config.EnableGhostDetection then return false end
+    
+    local enemyId = tostring(enemy)
+    local ghostData = self.Cache.GhostMobs[enemyId]
+    
+    return ghostData and ghostData.isGhost or false
+end
+
+function FastAttack:CleanGhostCache()
+    -- Clean up ghost cache periodically
+    local currentTime = tick()
+    for enemyId, data in pairs(self.Cache.GhostMobs) do
+        if currentTime - data.lastCheckTime > 30 then
+            self.Cache.GhostMobs[enemyId] = nil
+        end
+    end
 end
 
 -- ==================== ENHANCED ENEMY VALIDATION ====================
 function FastAttack:IsValidEnemy(enemy)
     if not enemy or enemy == char then return false end
     
-    -- Quick dead check
-    if self.Config.SkipDeadCheck then
-        if not enemy:FindFirstChild("Humanoid") then return false end
-    else
-        if not IsAlive(enemy) then return false end
+    -- Check if it's a ghost mob
+    if self:IsGhostMob(enemy) then return false end
+
+    local hum = enemy:FindFirstChild("Humanoid")
+    local hrp = enemy:FindFirstChild("HumanoidRootPart")
+    
+    if not hum or not hrp then return false end
+    if hum.Health <= 0 then return false end
+    
+    -- Additional health verification
+    if hum.MaxHealth > 0 and hum.Health >= hum.MaxHealth * 0.99 then
+        -- Likely freshly spawned, safe to attack
+        self:InitGhostTracking(enemy)
     end
-    
-    local enemyPlayer = Players:FindFirstChild(enemy.Name)
+
+    local enemyPlayer = Players:GetPlayerFromCharacter(enemy)
     local isPlayer = enemyPlayer ~= nil
-    
+
     -- MOB validation
     if not isPlayer then
         if not self.Config.AttackMob then return false end
-        local hum = enemy:FindFirstChild("Humanoid")
-        local hrp = enemy:FindFirstChild("HumanoidRootPart")
-        return hum and hrp and hum.Health > 0
+        
+        -- Verify mob is attackable
+        if not enemy:IsDescendantOf(workspace) then return false end
+        
+        return true
     end
-    
+
     -- PLAYER validation
     if not self.Config.AttackPlayers then return false end
-    
-    local enemyChar = Characters:FindFirstChild(enemy.Name)
+
+    local enemyChar = Characters and Characters:FindFirstChild(enemy.Name)
     if not enemyChar then return false end
-    
-    local enemyHrp = enemyChar:FindFirstChild("HumanoidRootPart")
-    local enemyHum = enemyChar:FindFirstChild("Humanoid")
-    if not enemyHrp or not enemyHum or enemyHum.Health <= 0 then return false end
-    
+
     -- Team check
-    if enemyPlayer.Team == player.Team then return false end
-    
+    if enemyPlayer and enemyPlayer.Team == player.Team then return false end
+
     -- Cache player GUI checks
     local cacheKey = enemy.Name
     if self.Cache.PlayerStates[cacheKey] and 
-       tick() - self.Cache.PlayerStates[cacheKey].time < 0.5 then
+       tick() - self.Cache.PlayerStates[cacheKey].time < 1 then
         return self.Cache.PlayerStates[cacheKey].valid
     end
-    
+
     local gui = player:FindFirstChild("PlayerGui")
     if gui and gui:FindFirstChild("Main") then
         local mainGui = gui.Main
-        
+
         -- PvP Disabled check
         if mainGui:FindFirstChild("PvpDisabled") and mainGui.PvpDisabled.Visible then
             self.Cache.PlayerStates[cacheKey] = {valid = false, time = tick()}
             return false
         end
-        
+
         -- SafeZone check
         if mainGui:FindFirstChild("BottomHUDList") then
             local safeZone = mainGui.BottomHUDList:FindFirstChild("SafeZone")
@@ -170,7 +266,7 @@ function FastAttack:IsValidEnemy(enemy)
             end
         end
     end
-    
+
     self.Cache.PlayerStates[cacheKey] = {valid = true, time = tick()}
     return true
 end
@@ -180,33 +276,43 @@ function FastAttack:GatherEnemies()
     local enemies = {}
     local maxDist = self.Config.AttackDistance
     
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return enemies end
+
     local function processFolder(folder)
+        if not folder then return end
+        
         for _, enemy in ipairs(folder:GetChildren()) do
             if #enemies >= self.Config.MaxTargets then break end
-            
+
             local head = enemy:FindFirstChild("Head")
-            if head then
-                local dist = GetDistance(head.Position)
+            local hrp = enemy:FindFirstChild("HumanoidRootPart")
+            
+            if head and hrp then
+                local dist = GetDistance(hrp.Position)
+                
                 if dist < maxDist and self:IsValidEnemy(enemy) then
+                    local hum = enemy:FindFirstChild("Humanoid")
+                    
                     table.insert(enemies, {
                         enemy = enemy,
                         head = head,
+                        hrp = hrp,
                         distance = dist,
-                        health = enemy:FindFirstChild("Humanoid") and enemy.Humanoid.Health or 0
+                        health = hum and hum.Health or 0
                     })
                 end
             end
         end
     end
-    
-    if self.Config.AttackMob then
+
+    if self.Config.AttackMob and Enemies then
         processFolder(Enemies)
     end
-    
-    if self.Config.AttackPlayers then
+
+    if self.Config.AttackPlayers and Characters then
         processFolder(Characters)
     end
-    
+
     return enemies
 end
 
@@ -225,49 +331,62 @@ end
 -- ==================== ATTACK EXECUTION ====================
 function FastAttack:ExecuteAttack(enemies)
     if #enemies == 0 then return false end
-    
+    if not RegisterAttack or not RegisterHit then return false end
+
     local attackData = {}
-    local basePart = enemies[1].head
+    local primaryTarget = enemies[1]
     
+    -- Build attack data
     for i, data in ipairs(enemies) do
         table.insert(attackData, {data.enemy, data.head})
+        
+        -- Update ghost tracking
+        if self.Config.EnableGhostDetection then
+            self:UpdateGhostTracking(data.enemy)
+        end
     end
+
+    -- Execute attack with error handling
+    local success, err = pcall(function()
+        RegisterAttack:FireServer(self.Config.ClickDelay)
+        
+        if self.Config.VerifyHitRegistration then
+            task.wait(0.02) -- Small delay to ensure registration
+        end
+        
+        RegisterHit:FireServer(primaryTarget.head, attackData)
+    end)
     
-    -- Preemptive attack without waiting
-    if self.Config.PreemptiveAttack then
-        pcall(function()
-            RegisterAttack:FireServer(self.Config.ClickDelay)
-            RegisterHit:FireServer(basePart, attackData)
-        end)
-    else
-        local success = pcall(function()
-            RegisterAttack:FireServer(self.Config.ClickDelay)
-            RegisterHit:FireServer(basePart, attackData)
-        end)
-        if not success then return false end
+    if not success then
+        warn("Attack execution failed: " .. tostring(err))
+        return false
     end
-    
+
     -- Update stats
     self.Stats.TotalAttacks = self.Stats.TotalAttacks + 1
     self.Stats.LastAttackTime = tick()
-    
+
     return true
 end
 
 -- ==================== MAIN ATTACK LOOP ====================
 function FastAttack:AttackCycle()
     if not self.Config.FastAttack then return end
-    
+    if not char or not IsAlive(char) then return end
+
     -- Check if weapon is equipped
-    local equipped = IsAlive(char) and char:FindFirstChildOfClass("Tool")
-    if not equipped or equipped.ToolTip == "Gun" then return end
+    local equipped = char:FindFirstChildOfClass("Tool")
+    if not equipped then return end
     
+    -- Skip guns
+    if equipped.ToolTip == "Gun" or equipped.Name:lower():find("gun") then return end
+
     -- Gather and sort enemies
     local enemies = self:GatherEnemies()
     if #enemies == 0 then return end
-    
+
     enemies = self:SortEnemies(enemies)
-    
+
     -- Execute attack
     self:ExecuteAttack(enemies)
 end
@@ -277,17 +396,19 @@ function FastAttack:GetAdaptiveDelay()
     if not self.Config.UseSmartDelay then
         return self.Config.FastAttackDelay
     end
-    
+
     local ping = player:GetNetworkPing()
     local baseDelay = self.Config.FastAttackDelay
-    
+
     -- Adjust delay based on ping
-    if ping > 0.2 then
+    if ping > 0.3 then
+        return baseDelay * 2
+    elseif ping > 0.2 then
         return baseDelay * 1.5
     elseif ping > 0.1 then
         return baseDelay * 1.2
     else
-        return baseDelay
+        return baseDelay * 0.9
     end
 end
 
@@ -296,39 +417,46 @@ function FastAttack:Start()
     if self.Running then return end
     self.Running = true
     
-    local connection
-    if self.Config.UseRenderStepped then
-        -- Fastest possible updates
-        connection = RunService.RenderStepped:Connect(function()
-            if self.Config.FastAttack then
+    print("Fast Attack System Started")
+
+    -- Main attack loop using Heartbeat for stability
+    self.Connection = RunService.Heartbeat:Connect(function()
+        if self.Config.FastAttack then
+            pcall(function()
                 self:AttackCycle()
-            end
-        end)
-    else
-        -- Standard heartbeat
-        connection = RunService.Heartbeat:Connect(function()
-            if self.Config.FastAttack then
-                self:AttackCycle()
-            end
-        end)
-    end
-    
-    self.Connection = connection
-    
+            end)
+        end
+    end)
+
     -- Backup loop with adaptive delay
-    spawn(function()
+    task.spawn(function()
         while self.Running do
             local delay = self:GetAdaptiveDelay()
             task.wait(delay)
+            
             if self.Config.FastAttack then
-                self:AttackCycle()
+                pcall(function()
+                    self:AttackCycle()
+                end)
             end
         end
     end)
+    
+    -- Ghost cache cleanup loop
+    if self.Config.EnableGhostDetection then
+        task.spawn(function()
+            while self.Running do
+                task.wait(15)
+                self:CleanGhostCache()
+            end
+        end)
+    end
 end
 
 function FastAttack:Stop()
     self.Running = false
+    print("Fast Attack System Stopped")
+    
     if self.Connection then
         self.Connection:Disconnect()
         self.Connection = nil
@@ -342,19 +470,32 @@ function FastAttack:UpdateConfig(newConfig)
             self.Config[key] = value
         end
     end
-    
+
     -- Restart if needed
     if self.Running then
         self:Stop()
-        task.wait(0.1)
+        task.wait(0.2)
         self:Start()
     end
+end
+
+-- ==================== DEBUG INFO ====================
+function FastAttack:GetDebugInfo()
+    return {
+        Running = self.Running,
+        TotalAttacks = self.Stats.TotalAttacks,
+        GhostsDetected = self.Stats.GhostsDetected,
+        CachedGhosts = #self.Cache.GhostMobs,
+        LastAttack = self.Stats.LastAttackTime,
+        Config = self.Config
+    }
 end
 
 -- ==================== CHARACTER RESPAWN HANDLER ====================
 player.CharacterAdded:Connect(function(newChar)
     char = newChar
-    task.wait(1)
+    task.wait(1.5)
+    
     if FastAttack.Running then
         FastAttack:Stop()
         task.wait(0.5)
@@ -362,11 +503,28 @@ player.CharacterAdded:Connect(function(newChar)
     end
 end)
 
+-- ==================== WORKSPACE MONITORING ====================
+if not Enemies then
+    workspace.ChildAdded:Connect(function(child)
+        if child.Name == "Enemies" then
+            Enemies = child
+        end
+    end)
+end
+
+if not Characters then
+    workspace.ChildAdded:Connect(function(child)
+        if child.Name == "Characters" then
+            Characters = child
+        end
+    end)
+end
+
 -- ==================== AUTO-START ====================
 _ENV.FastAttackSkibidi = FastAttack
 
 if Config.FastAttack then
-    task.wait(1)
+    task.wait(1.5)
     FastAttack:Start()
 end
 
