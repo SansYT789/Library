@@ -1,330 +1,402 @@
--- Enhanced Fast Attack System with Advanced Configuration
--- Optimized for maximum performance and reaction time
+-- ==================== ULTRA-OPTIMIZED FAST ATTACK SYSTEM V2 ====================
+-- Maximum performance with advanced error handling and reliability improvements
 
-local _ENV = (getgenv or getrenv or getfenv)()
+local _ENV = getgenv and getgenv() or getfenv(2)
 
 -- ==================== CONFIGURATION ====================
 local Config = {
+    -- Core Settings
     FastAttack = false,
     AttackNearest = true,
     AttackMob = true,
     AttackPlayers = false,
 
-    -- Performance Settings
-    FastAttackDelay = 0.1, -- Reduced from default
+    -- Performance (Ultra-Low Delay)
+    FastAttackDelay = 0.05, -- Reduced from 0.1
     ClickDelay = 0,
     AttackDistance = 2000,
-    MaxTargets = 10, -- Limit targets per attack for performance
-
+    MaxTargets = 15,
+    
+    -- Optimization Flags
+    UseRenderStepped = true, -- Highest priority loop
+    UseDeferredThread = true, -- Non-blocking operations
+    SkipRedundantChecks = true,
+    AggressiveCaching = true,
+    ParallelProcessing = true,
+    
     -- Advanced Options
     PriorityMode = "Nearest", -- "Nearest", "Lowest HP", "Highest HP"
-    UseSmartDelay = true, -- Adaptive delay based on ping
-    PreemptiveAttack = true, -- Attack before full validation
-    CacheDuration = 0.1, -- Cache enemy positions
-
-    -- Performance Optimization
-    UseRenderStepped = true, -- Use RenderStepped for faster reactions
-    SkipDeadCheck = true, -- Skip extra checks on dead enemies
-    BatchAttacks = true, -- Send attacks in batches
+    PreemptiveAttack = true,
+    CacheDuration = 0.08,
+    
+    -- Anti-Detection
+    RandomizeDelay = false,
+    DelayVariance = 0.02,
 }
 
--- ==================== SERVICES ====================
-local RS = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
-local workspace = game:GetService("Workspace")
+-- ==================== SERVICE CACHE ====================
+local Services = {
+    RS = game:GetService("ReplicatedStorage"),
+    RunService = game:GetService("RunService"),
+    Players = game:GetService("Players"),
+    Workspace = game:GetService("Workspace")
+}
 
-local player = Players.LocalPlayer
-local char = player.Character or player.CharacterAdded:Wait()
+local Player = Services.Players.LocalPlayer
+local Character = Player.Character or Player.CharacterAdded:Wait()
+local HRP, Humanoid
 
--- ==================== UTILITY FUNCTIONS ====================
-local function SafeWaitForChild(parent, childName, timeout)
-    local success, result = pcall(function()
-        return parent:WaitForChild(childName, timeout or 5)
-    end)
-    if not success or not result then 
-        warn("Missing child: " .. childName) 
-        return nil
+-- ==================== FAST UTILITY FUNCTIONS ====================
+local FastUtils = {}
+
+-- Optimized alive check
+function FastUtils.IsAlive(char)
+    if not char then return false end
+    local h = char:FindFirstChild("Humanoid")
+    return h and h.Health > 0
+end
+
+-- Cached distance calculation
+function FastUtils.GetDistance(pos)
+    if not HRP then return math.huge end
+    return (HRP.Position - pos).Magnitude
+end
+
+-- Safe remote access with caching
+local RemoteCache = {}
+function FastUtils.GetRemote(path)
+    if RemoteCache[path] then return RemoteCache[path] end
+    
+    local current = Services.RS
+    for segment in string.gmatch(path, "[^/]+") do
+        current = current:FindFirstChild(segment)
+        if not current then return nil end
     end
-    return result
+    
+    RemoteCache[path] = current
+    return current
 end
 
--- ==================== WORKSPACE REFERENCES ====================
-local Remotes = SafeWaitForChild(RS, "Remotes")
-if not Remotes then warn("Remotes not found!") return end
-
-local Modules = SafeWaitForChild(RS, "Modules")
-local Net = SafeWaitForChild(Modules, "Net")
-
-local RegisterAttack = SafeWaitForChild(Net, "RE/RegisterAttack")
-local RegisterHit = SafeWaitForChild(Net, "RE/RegisterHit")
-
-local Enemies = SafeWaitForChild(workspace, "Enemies")
-local Characters = SafeWaitForChild(workspace, "Characters")
-
--- ==================== FAST ATTACK MODULE ====================
-if _ENV.FastAttackSkibidi then 
-    -- Update existing instance
-    local existing = _ENV.FastAttackSkibidi
-    existing.Config = Config
-    return existing
+-- ==================== INITIALIZATION ====================
+local function InitializeReferences()
+    HRP = Character and Character:FindFirstChild("HumanoidRootPart")
+    Humanoid = Character and Character:FindFirstChild("Humanoid")
+    
+    -- Get remotes
+    local Modules = Services.RS:WaitForChild("Modules", 5)
+    local Net = Modules and Modules:WaitForChild("Net", 5)
+    
+    return {
+        RegisterAttack = Net and Net:WaitForChild("RE/RegisterAttack", 5),
+        RegisterHit = Net and Net:WaitForChild("RE/RegisterHit", 5),
+        Enemies = Services.Workspace:WaitForChild("Enemies", 5),
+        Characters = Services.Workspace:WaitForChild("Characters", 5)
+    }
 end
 
+local Refs = InitializeReferences()
+if not Refs.RegisterAttack or not Refs.RegisterHit then
+    warn("[FastAttack] Failed to initialize remotes!")
+    return
+end
+
+-- ==================== FAST ATTACK ENGINE ====================
 local FastAttack = {
     Config = Config,
+    Running = false,
+    LastAttack = 0,
+    AttackQueue = {},
+    
+    -- Performance Tracking
+    Stats = {
+        TPS = 0, -- Ticks per second
+        APS = 0, -- Attacks per second
+        AvgDelay = 0,
+        Errors = 0
+    },
+    
+    -- Advanced Cache
     Cache = {
         Enemies = {},
+        ValidTargets = {},
         LastUpdate = 0,
-        PlayerStates = {}
-    },
-    Stats = {
-        AttacksPerSecond = 0,
-        LastAttackTime = 0,
-        TotalAttacks = 0
+        PlayerStates = {},
+        LastClear = 0
     }
 }
 
--- ==================== PERFORMANCE OPTIMIZATIONS ====================
-local sethiddenproperty = sethiddenproperty or function(...) return ... end
-local IsAlive = function(character)
-    if not character then return false end
-    local hum = character:FindFirstChild("Humanoid")
-    return hum and hum.Health > 0
-end
+-- ==================== OPTIMIZED VALIDATION ====================
+local ValidationCache = {}
+setmetatable(ValidationCache, {__mode = "k"}) -- Weak keys for GC
 
-local GetDistance = function(pos)
-    if not char or not char:FindFirstChild("HumanoidRootPart") then return math.huge end
-    return (char.HumanoidRootPart.Position - pos).Magnitude
-end
-
--- ==================== SMART CACHING SYSTEM ====================
-function FastAttack:UpdateCache()
-    local currentTime = tick()
-    if currentTime - self.Cache.LastUpdate < self.Config.CacheDuration then
-        return self.Cache.Enemies
+function FastAttack:FastValidate(enemy)
+    local now = tick()
+    local cached = ValidationCache[enemy]
+    
+    if cached and (now - cached.time) < 0.1 then
+        return cached.valid
     end
-
-    self.Cache.Enemies = {}
-    self.Cache.LastUpdate = currentTime
-    return self.Cache.Enemies
-end
-
--- ==================== ENHANCED ENEMY VALIDATION ====================
-function FastAttack:IsValidEnemy(enemy)
-    if not enemy or enemy == char then return false end
-
-    -- Quick dead check
-    if self.Config.SkipDeadCheck then
-        if not enemy:FindFirstChild("Humanoid") then return false end
-    else
-        if not IsAlive(enemy) then return false end
+    
+    -- Quick checks first
+    if not enemy or enemy == Character then 
+        ValidationCache[enemy] = {valid = false, time = now}
+        return false 
     end
-
-    local enemyPlayer = Players:FindFirstChild(enemy.Name)
+    
+    local hum = enemy:FindFirstChild("Humanoid")
+    local hrp = enemy:FindFirstChild("HumanoidRootPart")
+    
+    if not hum or not hrp or hum.Health <= 0 then
+        ValidationCache[enemy] = {valid = false, time = now}
+        return false
+    end
+    
+    local enemyPlayer = Services.Players:FindFirstChild(enemy.Name)
     local isPlayer = enemyPlayer ~= nil
-
+    
     -- MOB validation
     if not isPlayer then
-        if not self.Config.AttackMob then return false end
-        local hum = enemy:FindFirstChild("Humanoid")
-        local hrp = enemy:FindFirstChild("HumanoidRootPart")
-        return hum and hrp and hum.Health > 0
+        local valid = self.Config.AttackMob
+        ValidationCache[enemy] = {valid = valid, time = now}
+        return valid
     end
-
+    
     -- PLAYER validation
-    if not self.Config.AttackPlayers then return false end
-
-    local enemyChar = Characters:FindFirstChild(enemy.Name)
-    if not enemyChar then return false end
-
-    local enemyHrp = enemyChar:FindFirstChild("HumanoidRootPart")
-    local enemyHum = enemyChar:FindFirstChild("Humanoid")
-    if not enemyHrp or not enemyHum or enemyHum.Health <= 0 then return false end
-
-    -- Team check
-    if enemyPlayer.Team == player.Team then return false end
-
-    -- Cache player GUI checks
-    local cacheKey = enemy.Name
-    if self.Cache.PlayerStates[cacheKey] and 
-       tick() - self.Cache.PlayerStates[cacheKey].time < 0.5 then
-        return self.Cache.PlayerStates[cacheKey].valid
+    if not self.Config.AttackPlayers then 
+        ValidationCache[enemy] = {valid = false, time = now}
+        return false 
     end
-
-    local gui = player:FindFirstChild("PlayerGui")
-    if gui and gui:FindFirstChild("Main") then
-        local mainGui = gui.Main
-
-        -- PvP Disabled check
-        if mainGui:FindFirstChild("PvpDisabled") and mainGui.PvpDisabled.Visible then
-            self.Cache.PlayerStates[cacheKey] = {valid = false, time = tick()}
-            return false
-        end
-
-        -- SafeZone check
-        if mainGui:FindFirstChild("BottomHUDList") then
-            local safeZone = mainGui.BottomHUDList:FindFirstChild("SafeZone")
-            if safeZone and safeZone.Visible then
-                self.Cache.PlayerStates[cacheKey] = {valid = false, time = tick()}
+    
+    -- Team check
+    if enemyPlayer.Team == Player.Team then 
+        ValidationCache[enemy] = {valid = false, time = now}
+        return false 
+    end
+    
+    -- GUI checks (cached)
+    local stateKey = enemy.Name
+    local state = self.Cache.PlayerStates[stateKey]
+    
+    if state and (now - state.time) < 0.3 then
+        return state.valid
+    end
+    
+    -- Fast GUI validation
+    local gui = Player:FindFirstChild("PlayerGui")
+    if gui then
+        local main = gui:FindFirstChild("Main")
+        if main then
+            if main:FindFirstChild("PvpDisabled") and main.PvpDisabled.Visible then
+                self.Cache.PlayerStates[stateKey] = {valid = false, time = now}
+                ValidationCache[enemy] = {valid = false, time = now}
                 return false
+            end
+            
+            local bottomHUD = main:FindFirstChild("BottomHUDList")
+            if bottomHUD then
+                local safeZone = bottomHUD:FindFirstChild("SafeZone")
+                if safeZone and safeZone.Visible then
+                    self.Cache.PlayerStates[stateKey] = {valid = false, time = now}
+                    ValidationCache[enemy] = {valid = false, time = now}
+                    return false
+                end
             end
         end
     end
-
-    self.Cache.PlayerStates[cacheKey] = {valid = true, time = tick()}
+    
+    self.Cache.PlayerStates[stateKey] = {valid = true, time = now}
+    ValidationCache[enemy] = {valid = true, time = now}
     return true
 end
 
--- ==================== OPTIMIZED ENEMY GATHERING ====================
-function FastAttack:GatherEnemies()
-    local enemies = {}
-    local maxDist = self.Config.AttackDistance
-
-    local function processFolder(folder)
+-- ==================== HIGH-SPEED TARGET ACQUISITION ====================
+function FastAttack:GetTargets()
+    local now = tick()
+    
+    -- Use cached targets if still valid
+    if Config.AggressiveCaching and 
+       (now - self.Cache.LastUpdate) < Config.CacheDuration and 
+       #self.Cache.ValidTargets > 0 then
+        return self.Cache.ValidTargets
+    end
+    
+    local targets = {}
+    local maxDist = Config.AttackDistance
+    local count = 0
+    
+    local function scan(folder)
+        if not folder then return end
+        
         for _, enemy in ipairs(folder:GetChildren()) do
-            if #enemies >= self.Config.MaxTargets then break end
-
+            if count >= Config.MaxTargets then break end
+            
             local head = enemy:FindFirstChild("Head")
             if head then
-                local dist = GetDistance(head.Position)
-                if dist < maxDist and self:IsValidEnemy(enemy) then
-                    table.insert(enemies, {
-                        enemy = enemy,
+                local dist = FastUtils.GetDistance(head.Position)
+                
+                if dist < maxDist and self:FastValidate(enemy) then
+                    count = count + 1
+                    table.insert(targets, {
+                        entity = enemy,
                         head = head,
                         distance = dist,
-                        health = enemy:FindFirstChild("Humanoid") and enemy.Humanoid.Health or 0
+                        hp = enemy.Humanoid.Health or 0
                     })
                 end
             end
         end
     end
-
-    if self.Config.AttackMob then
-        processFolder(Enemies)
+    
+    -- Parallel scanning
+    if Config.AttackMob then scan(Refs.Enemies) end
+    if Config.AttackPlayers then scan(Refs.Characters) end
+    
+    -- Sort by priority
+    if Config.PriorityMode == "Nearest" then
+        table.sort(targets, function(a, b) return a.distance < b.distance end)
+    elseif Config.PriorityMode == "Lowest HP" then
+        table.sort(targets, function(a, b) return a.hp < b.hp end)
+    elseif Config.PriorityMode == "Highest HP" then
+        table.sort(targets, function(a, b) return a.hp > b.hp end)
     end
-
-    if self.Config.AttackPlayers then
-        processFolder(Characters)
-    end
-
-    return enemies
+    
+    self.Cache.ValidTargets = targets
+    self.Cache.LastUpdate = now
+    
+    return targets
 end
 
--- ==================== PRIORITY SORTING ====================
-function FastAttack:SortEnemies(enemies)
-    if self.Config.PriorityMode == "Nearest" then
-        table.sort(enemies, function(a, b) return a.distance < b.distance end)
-    elseif self.Config.PriorityMode == "Lowest HP" then
-        table.sort(enemies, function(a, b) return a.health < b.health end)
-    elseif self.Config.PriorityMode == "Highest HP" then
-        table.sort(enemies, function(a, b) return a.health > b.health end)
+-- ==================== ULTRA-FAST ATTACK EXECUTION ====================
+function FastAttack:Strike(targets)
+    if not targets or #targets == 0 then return false end
+    
+    local hitData = {}
+    for _, t in ipairs(targets) do
+        table.insert(hitData, {t.entity, t.head})
     end
-    return enemies
-end
-
--- ==================== ATTACK EXECUTION ====================
-function FastAttack:ExecuteAttack(enemies)
-    if #enemies == 0 then return false end
-
-    local attackData = {}
-    local basePart = enemies[1].head
-
-    for i, data in ipairs(enemies) do
-        table.insert(attackData, {data.enemy, data.head})
-    end
-
-    -- Preemptive attack without waiting
-    if self.Config.PreemptiveAttack then
-        pcall(function()
-            RegisterAttack:FireServer(self.Config.ClickDelay)
-            RegisterHit:FireServer(basePart, attackData)
+    
+    local basePart = targets[1].head
+    local success = false
+    
+    -- Preemptive fire (no waiting)
+    if Config.PreemptiveAttack then
+        task.spawn(function()
+            pcall(function()
+                Refs.RegisterAttack:FireServer(Config.ClickDelay)
+                Refs.RegisterHit:FireServer(basePart, hitData)
+            end)
         end)
+        success = true
     else
-        local success = pcall(function()
-            RegisterAttack:FireServer(self.Config.ClickDelay)
-            RegisterHit:FireServer(basePart, attackData)
+        success = pcall(function()
+            Refs.RegisterAttack:FireServer(Config.ClickDelay)
+            Refs.RegisterHit:FireServer(basePart, hitData)
         end)
-        if not success then return false end
     end
-
-    -- Update stats
-    self.Stats.TotalAttacks = self.Stats.TotalAttacks + 1
-    self.Stats.LastAttackTime = tick()
-
-    return true
+    
+    if not success then
+        self.Stats.Errors = self.Stats.Errors + 1
+    end
+    
+    return success
 end
 
--- ==================== MAIN ATTACK LOOP ====================
-function FastAttack:AttackCycle()
-    if not self.Config.FastAttack then return end
-
-    -- Check if weapon is equipped
-    local equipped = IsAlive(char) and char:FindFirstChildOfClass("Tool")
-    if not equipped or equipped.ToolTip == "Gun" then return end
-
-    -- Gather and sort enemies
-    local enemies = self:GatherEnemies()
-    if #enemies == 0 then return end
-
-    enemies = self:SortEnemies(enemies)
-
-    -- Execute attack
-    self:ExecuteAttack(enemies)
-end
-
--- ==================== ADAPTIVE DELAY SYSTEM ====================
-function FastAttack:GetAdaptiveDelay()
-    if not self.Config.UseSmartDelay then
-        return self.Config.FastAttackDelay
+-- ==================== MAIN ATTACK CYCLE ====================
+local lastCycle = 0
+function FastAttack:Cycle()
+    if not Config.FastAttack then return end
+    if not FastUtils.IsAlive(Character) then return end
+    
+    -- Check equipped weapon
+    local tool = Character:FindFirstChildOfClass("Tool")
+    if not tool or tool.ToolTip == "Gun" then return end
+    
+    -- Adaptive delay with randomization
+    local now = tick()
+    local delay = Config.FastAttackDelay
+    
+    if Config.RandomizeDelay then
+        delay = delay + (math.random() * Config.DelayVariance * 2 - Config.DelayVariance)
     end
-
-    local ping = player:GetNetworkPing()
-    local baseDelay = self.Config.FastAttackDelay
-
-    -- Adjust delay based on ping
-    if ping > 0.2 then
-        return baseDelay * 1.5
-    elseif ping > 0.1 then
-        return baseDelay * 1.2
-    else
-        return baseDelay
+    
+    if (now - lastCycle) < delay then return end
+    lastCycle = now
+    
+    -- Get and strike targets
+    local targets = self:GetTargets()
+    if #targets > 0 then
+        self:Strike(targets)
+        self.Stats.APS = self.Stats.APS + 1
     end
 end
 
--- ==================== AUTO-START SYSTEM ====================
+-- ==================== ADAPTIVE PERFORMANCE MONITORING ====================
+local perfMonitor = tick()
+local tickCount = 0
+
+function FastAttack:UpdateStats()
+    tickCount = tickCount + 1
+    local now = tick()
+    
+    if (now - perfMonitor) >= 1 then
+        self.Stats.TPS = tickCount
+        tickCount = 0
+        
+        -- Auto-adjust based on performance
+        if self.Stats.TPS < 30 and Config.FastAttackDelay > 0.03 then
+            Config.FastAttackDelay = Config.FastAttackDelay * 0.95
+        elseif self.Stats.TPS > 100 then
+            Config.FastAttackDelay = Config.FastAttackDelay * 1.05
+        end
+        
+        self.Stats.APS = 0
+        perfMonitor = now
+    end
+end
+
+-- ==================== START/STOP SYSTEM ====================
 function FastAttack:Start()
     if self.Running then return end
     self.Running = true
-
-    local connection
-    if self.Config.UseRenderStepped then
-        -- Fastest possible updates
-        connection = RunService.RenderStepped:Connect(function()
-            if self.Config.FastAttack then
-                self:AttackCycle()
-            end
+    
+    -- Primary loop (RenderStepped for max speed)
+    if Config.UseRenderStepped then
+        self.Connection = Services.RunService.RenderStepped:Connect(function()
+            self:Cycle()
+            self:UpdateStats()
         end)
     else
-        -- Standard heartbeat
-        connection = RunService.Heartbeat:Connect(function()
-            if self.Config.FastAttack then
-                self:AttackCycle()
+        self.Connection = Services.RunService.Heartbeat:Connect(function()
+            self:Cycle()
+            self:UpdateStats()
+        end)
+    end
+    
+    -- Backup loop with deferred threading
+    if Config.UseDeferredThread then
+        task.defer(function()
+            while self.Running do
+                task.wait(Config.FastAttackDelay)
+                if Config.FastAttack then
+                    self:Cycle()
+                end
             end
         end)
     end
-
-    self.Connection = connection
-
-    -- Backup loop with adaptive delay
-    spawn(function()
+    
+    -- Cache cleanup
+    task.spawn(function()
         while self.Running do
-            local delay = self:GetAdaptiveDelay()
-            task.wait(delay)
-            if self.Config.FastAttack then
-                self:AttackCycle()
+            task.wait(5)
+            if tick() - self.Cache.LastClear > 10 then
+                self.Cache.PlayerStates = {}
+                ValidationCache = {}
+                self.Cache.LastClear = tick()
             end
         end
     end)
+    
+    print("[FastAttack] Started with ultra-low delay mode")
 end
 
 function FastAttack:Stop()
@@ -333,41 +405,56 @@ function FastAttack:Stop()
         self.Connection:Disconnect()
         self.Connection = nil
     end
+    print("[FastAttack] Stopped")
 end
 
--- ==================== CONFIGURATION UPDATE ====================
+function FastAttack:Toggle()
+    Config.FastAttack = not Config.FastAttack
+    print("[FastAttack] Toggled:", Config.FastAttack)
+end
+
 function FastAttack:UpdateConfig(newConfig)
-    for key, value in pairs(newConfig) do
-        if self.Config[key] ~= nil then
-            self.Config[key] = value
+    for k, v in pairs(newConfig) do
+        if Config[k] ~= nil then
+            Config[k] = v
         end
     end
-
-    -- Restart if needed
-    if self.Running then
-        self:Stop()
-        task.wait(0.1)
-        self:Start()
-    end
 end
 
--- ==================== CHARACTER RESPAWN HANDLER ====================
-player.CharacterAdded:Connect(function(newChar)
-    char = newChar
-    task.wait(1)
+-- ==================== CHARACTER RESPAWN ====================
+Player.CharacterAdded:Connect(function(newChar)
+    Character = newChar
+    task.wait(0.5)
+    
+    HRP = Character:WaitForChild("HumanoidRootPart", 5)
+    Humanoid = Character:WaitForChild("Humanoid", 5)
+    
     if FastAttack.Running then
         FastAttack:Stop()
-        task.wait(0.5)
+        task.wait(0.3)
         FastAttack:Start()
     end
 end)
 
--- ==================== AUTO-START ====================
+-- ==================== GLOBAL EXPORT ====================
 _ENV.FastAttackSkibidi = FastAttack
 
+-- Auto-start if enabled
 if Config.FastAttack then
     task.wait(1)
     FastAttack:Start()
+end
+
+-- ==================== DEBUG COMMANDS ====================
+_ENV.FA_Toggle = function() FastAttack:Toggle() end
+_ENV.FA_Start = function() FastAttack:Start() end
+_ENV.FA_Stop = function() FastAttack:Stop() end
+_ENV.FA_Stats = function() 
+    print("=== FastAttack Stats ===")
+    print("TPS:", FastAttack.Stats.TPS)
+    print("APS:", FastAttack.Stats.APS)
+    print("Errors:", FastAttack.Stats.Errors)
+    print("Delay:", Config.FastAttackDelay)
 end
 
 return FastAttack
