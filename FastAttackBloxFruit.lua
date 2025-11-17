@@ -130,16 +130,8 @@ local ValidationCache = {}
 setmetatable(ValidationCache, {__mode = "k"}) -- Weak keys for GC
 
 function FastAttack:FastValidate(enemy)
-    local now = tick()
-    local cached = ValidationCache[enemy]
-    
-    if cached and (now - cached.time) < 0.1 then
-        return cached.valid
-    end
-    
-    -- Quick checks first
+    -- Quick checks first (no caching for these)
     if not enemy or enemy == Character then 
-        ValidationCache[enemy] = {valid = false, time = now}
         return false 
     end
     
@@ -147,33 +139,29 @@ function FastAttack:FastValidate(enemy)
     local hrp = enemy:FindFirstChild("HumanoidRootPart")
     
     if not hum or not hrp or hum.Health <= 0 then
-        ValidationCache[enemy] = {valid = false, time = now}
         return false
     end
     
     local enemyPlayer = Services.Players:FindFirstChild(enemy.Name)
     local isPlayer = enemyPlayer ~= nil
     
-    -- MOB validation
+    -- MOB validation (FIXED - was using Config reference wrong)
     if not isPlayer then
-        local valid = self.Config.AttackMob
-        ValidationCache[enemy] = {valid = valid, time = now}
-        return valid
+        return Config.AttackMob == true
     end
     
     -- PLAYER validation
-    if not self.Config.AttackPlayers then 
-        ValidationCache[enemy] = {valid = false, time = now}
+    if not Config.AttackPlayers then 
         return false 
     end
     
     -- Team check
     if enemyPlayer.Team == Player.Team then 
-        ValidationCache[enemy] = {valid = false, time = now}
         return false 
     end
     
-    -- GUI checks (cached)
+    -- GUI checks (cached for players only)
+    local now = tick()
     local stateKey = enemy.Name
     local state = self.Cache.PlayerStates[stateKey]
     
@@ -188,7 +176,6 @@ function FastAttack:FastValidate(enemy)
         if main then
             if main:FindFirstChild("PvpDisabled") and main.PvpDisabled.Visible then
                 self.Cache.PlayerStates[stateKey] = {valid = false, time = now}
-                ValidationCache[enemy] = {valid = false, time = now}
                 return false
             end
             
@@ -197,7 +184,6 @@ function FastAttack:FastValidate(enemy)
                 local safeZone = bottomHUD:FindFirstChild("SafeZone")
                 if safeZone and safeZone.Visible then
                     self.Cache.PlayerStates[stateKey] = {valid = false, time = now}
-                    ValidationCache[enemy] = {valid = false, time = now}
                     return false
                 end
             end
@@ -205,7 +191,6 @@ function FastAttack:FastValidate(enemy)
     end
     
     self.Cache.PlayerStates[stateKey] = {valid = true, time = now}
-    ValidationCache[enemy] = {valid = true, time = now}
     return true
 end
 
@@ -213,43 +198,58 @@ end
 function FastAttack:GetTargets()
     local now = tick()
     
-    -- Use cached targets if still valid
-    if Config.AggressiveCaching and 
-       (now - self.Cache.LastUpdate) < Config.CacheDuration and 
-       #self.Cache.ValidTargets > 0 then
-        return self.Cache.ValidTargets
-    end
-    
+    -- Disable aggressive caching for debugging
     local targets = {}
     local maxDist = Config.AttackDistance
     local count = 0
     
     local function scan(folder)
-        if not folder then return end
+        if not folder then 
+            warn("[FastAttack] Folder is nil!")
+            return 
+        end
         
-        for _, enemy in ipairs(folder:GetChildren()) do
+        local children = folder:GetChildren()
+        print("[FastAttack] Scanning", folder.Name, "- Found", #children, "entities")
+        
+        for _, enemy in ipairs(children) do
             if count >= Config.MaxTargets then break end
             
             local head = enemy:FindFirstChild("Head")
             if head then
                 local dist = FastUtils.GetDistance(head.Position)
                 
-                if dist < maxDist and self:FastValidate(enemy) then
-                    count = count + 1
-                    table.insert(targets, {
-                        entity = enemy,
-                        head = head,
-                        distance = dist,
-                        hp = enemy.Humanoid.Health or 0
-                    })
+                if dist < maxDist then
+                    local isValid = self:FastValidate(enemy)
+                    print("[FastAttack] Enemy:", enemy.Name, "Distance:", math.floor(dist), "Valid:", isValid)
+                    
+                    if isValid then
+                        count = count + 1
+                        local hum = enemy:FindFirstChild("Humanoid")
+                        table.insert(targets, {
+                            entity = enemy,
+                            head = head,
+                            distance = dist,
+                            hp = hum and hum.Health or 0
+                        })
+                    end
                 end
             end
         end
     end
     
-    -- Parallel scanning
-    if Config.AttackMob then scan(Refs.Enemies) end
-    if Config.AttackPlayers then scan(Refs.Characters) end
+    -- Scan folders
+    print("[FastAttack] --- Scanning Start ---")
+    print("[FastAttack] AttackMob:", Config.AttackMob, "AttackPlayers:", Config.AttackPlayers)
+    
+    if Config.AttackMob then 
+        scan(Refs.Enemies) 
+    end
+    if Config.AttackPlayers then 
+        scan(Refs.Characters) 
+    end
+    
+    print("[FastAttack] Found", #targets, "valid targets")
     
     -- Sort by priority
     if Config.PriorityMode == "Nearest" then
@@ -417,8 +417,20 @@ function FastAttack:UpdateConfig(newConfig)
     for k, v in pairs(newConfig) do
         if Config[k] ~= nil then
             Config[k] = v
+            print("[FastAttack] Updated", k, "=", v)
         end
     end
+    
+    -- Restart if FastAttack state changed
+    if newConfig.FastAttack ~= nil then
+        if newConfig.FastAttack and not self.Running then
+            self:Start()
+        elseif not newConfig.FastAttack and self.Running then
+            self:Stop()
+        end
+    end
+    
+    print("[FastAttack] Config updated successfully")
 end
 
 -- ==================== CHARACTER RESPAWN ====================
