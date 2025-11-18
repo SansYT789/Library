@@ -1,36 +1,38 @@
+-- ==================== ULTRA-OPTIMIZED FAST ATTACK SYSTEM V3 ====================
+-- FIXED: Mob detection, validation logic, and performance improvements
+
 local _ENV = getgenv and getgenv() or getfenv(2)
+
+-- ==================== CONFIGURATION ====================
 local Config = {
     -- Core Settings
     FastAttack = false,
     AttackNearest = true,
     AttackMob = true,
     AttackPlayers = false,
-    
-    DebugPrint = false,
+    DebugMode = false, -- Toggle debug prints
 
-    -- Performance
-    FastAttackDelay = 0.05, -- Reduced from 0.1
+    -- Performance (Ultra-Low Delay)
+    FastAttackDelay = 0.05,
     ClickDelay = 0,
     AttackDistance = 2000,
     MaxTargets = 15,
-
+    
     -- Optimization Flags
-    UseRenderStepped = true, -- Highest priority loop
-    UseDeferredThread = true, -- Non-blocking operations
-    SkipRedundantChecks = true,
-    AggressiveCaching = true,
-    ParallelProcessing = true,
-
+    UseRenderStepped = true,
+    UseDeferredThread = true,
+    PreemptiveAttack = true,
+    
     -- Advanced Options
     PriorityMode = "Nearest", -- "Nearest", "Lowest HP", "Highest HP"
-    PreemptiveAttack = true,
     CacheDuration = 0.08,
-
+    
     -- Anti-Detection
     RandomizeDelay = false,
     DelayVariance = 0.02,
 }
 
+-- ==================== SERVICE INITIALIZATION ====================
 local Services = {
     RS = game:GetService("ReplicatedStorage"),
     RunService = game:GetService("RunService"),
@@ -42,77 +44,106 @@ local Player = Services.Players.LocalPlayer
 local Character = Player.Character or Player.CharacterAdded:Wait()
 local HRP, Humanoid
 
+-- ==================== UTILITY FUNCTIONS ====================
 local FastUtils = {}
 
--- Optimized alive check
 function FastUtils.IsAlive(char)
     if not char then return false end
     local h = char:FindFirstChild("Humanoid")
     return h and h.Health > 0
 end
 
--- Cached distance calculation
 function FastUtils.GetDistance(pos)
     if not HRP then return math.huge end
     return (HRP.Position - pos).Magnitude
 end
 
--- Safe remote access with caching
-local RemoteCache = {}
-function FastUtils.GetRemote(path)
-    if RemoteCache[path] then return RemoteCache[path] end
-
-    local current = Services.RS
-    for segment in string.gmatch(path, "[^/]+") do
-        current = current:FindFirstChild(segment)
-        if not current then return nil end
+function FastUtils.DebugPrint(...)
+    if Config.DebugMode then
+        print("[FastAttack]", ...)
     end
-
-    RemoteCache[path] = current
-    return current
 end
 
+-- ==================== INITIALIZATION ====================
 local function InitializeReferences()
+    -- Update character references
     HRP = Character and Character:FindFirstChild("HumanoidRootPart")
     Humanoid = Character and Character:FindFirstChild("Humanoid")
-
-    -- Get remotes
-    local Modules = Services.RS:WaitForChild("Modules", 5)
-    local Net = Modules and Modules:WaitForChild("Net", 5)
-
+    
+    if not HRP or not Humanoid then
+        warn("[FastAttack] Failed to get character parts!")
+        return nil
+    end
+    
+    -- Get remotes with better error handling
+    local Modules = Services.RS:FindFirstChild("Modules")
+    if not Modules then
+        Modules = Services.RS:WaitForChild("Modules", 10)
+    end
+    
+    if not Modules then
+        warn("[FastAttack] Modules folder not found!")
+        return nil
+    end
+    
+    local Net = Modules:FindFirstChild("Net")
+    if not Net then
+        Net = Modules:WaitForChild("Net", 10)
+    end
+    
+    if not Net then
+        warn("[FastAttack] Net folder not found!")
+        return nil
+    end
+    
+    local RegisterAttack = Net:FindFirstChild("RE/RegisterAttack")
+    local RegisterHit = Net:FindFirstChild("RE/RegisterHit")
+    
+    if not RegisterAttack or not RegisterHit then
+        RegisterAttack = Net:WaitForChild("RE/RegisterAttack", 10)
+        RegisterHit = Net:WaitForChild("RE/RegisterHit", 10)
+    end
+    
+    local Enemies = Services.Workspace:FindFirstChild("Enemies")
+    local Characters = Services.Workspace:FindFirstChild("Characters")
+    
+    if not Enemies then
+        Enemies = Services.Workspace:WaitForChild("Enemies", 10)
+    end
+    if not Characters then
+        Characters = Services.Workspace:WaitForChild("Characters", 10)
+    end
+    
     return {
-        RegisterAttack = Net and Net:WaitForChild("RE/RegisterAttack", 5),
-        RegisterHit = Net and Net:WaitForChild("RE/RegisterHit", 5),
-        Enemies = Services.Workspace:WaitForChild("Enemies", 5),
-        Characters = Services.Workspace:WaitForChild("Characters", 5)
+        RegisterAttack = RegisterAttack,
+        RegisterHit = RegisterHit,
+        Enemies = Enemies,
+        Characters = Characters
     }
 end
 
 local Refs = InitializeReferences()
-if not Refs.RegisterAttack or not Refs.RegisterHit then
-    if Config.DebugPrint then
-        warn("[FastAttack] Failed to initialize remotes!")
-    end
+if not Refs or not Refs.RegisterAttack or not Refs.RegisterHit then
+    warn("[FastAttack] Critical initialization failure!")
     return
 end
 
+FastUtils.DebugPrint("Initialization successful!")
+
+-- ==================== FAST ATTACK ENGINE ====================
 local FastAttack = {
     Config = Config,
     Running = false,
     LastAttack = 0,
-    AttackQueue = {},
-
-    -- Performance Tracking
+    
     Stats = {
-        TPS = 0, -- Ticks per second
-        APS = 0, -- Attacks per second
-        AvgDelay = 0,
+        TPS = 0,
+        APS = 0,
+        TotalAttacks = 0,
         Errors = 0
     },
-
-    -- Advanced Cache
+    
     Cache = {
-        Enemies = {},
         ValidTargets = {},
         LastUpdate = 0,
         PlayerStates = {},
@@ -120,59 +151,81 @@ local FastAttack = {
     }
 }
 
-local ValidationCache = {}
-setmetatable(ValidationCache, {__mode = "k"}) -- Weak keys for GC
-
-function FastAttack:FastValidate(enemy)
-    -- Quick checks first (no caching for these)
+-- ==================== IMPROVED VALIDATION ====================
+function FastAttack:ValidateEnemy(enemy)
+    -- Basic validation
     if not enemy or enemy == Character then 
         return false 
     end
-
+    
+    -- Check required parts
     local hum = enemy:FindFirstChild("Humanoid")
     local hrp = enemy:FindFirstChild("HumanoidRootPart")
-
-    if not hum or not hrp or hum.Health <= 0 then
+    local head = enemy:FindFirstChild("Head")
+    
+    if not hum or not hrp or not head then
         return false
     end
-
-    local enemyPlayer = Services.Players:FindFirstChild(enemy.Name)
-    local isPlayer = enemyPlayer ~= nil
-
-    -- MOB validation (FIXED - was using Config reference wrong)
-    if not isPlayer then
-        return Config.AttackMob == true
+    
+    -- Health check
+    if hum.Health <= 0 then
+        return false
     end
-
+    
+    -- Determine if player or mob
+    local enemyPlayer = Services.Players:GetPlayerFromCharacter(enemy)
+    local isPlayer = enemyPlayer ~= nil
+    
+    -- MOB validation - SIMPLIFIED AND FIXED
+    if not isPlayer then
+        -- It's a mob, check if we should attack mobs
+        if not Config.AttackMob then
+            return false
+        end
+        
+        -- Additional mob checks (optional)
+        -- Some games have "friendly" mobs, you can add checks here
+        
+        return true -- Valid mob
+    end
+    
     -- PLAYER validation
     if not Config.AttackPlayers then 
         return false 
     end
-
+    
+    -- Self check (redundant but safe)
+    if enemyPlayer == Player then
+        return false
+    end
+    
     -- Team check
-    if enemyPlayer.Team == Player.Team then 
+    if Player.Team and enemyPlayer.Team and enemyPlayer.Team == Player.Team then 
         return false 
     end
-
-    -- GUI checks (cached for players only)
+    
+    -- GUI checks with caching
     local now = tick()
     local stateKey = enemy.Name
-    local state = self.Cache.PlayerStates[stateKey]
-
-    if state and (now - state.time) < 0.3 then
-        return state.valid
+    local cached = self.Cache.PlayerStates[stateKey]
+    
+    if cached and (now - cached.time) < 0.5 then
+        return cached.valid
     end
-
-    -- Fast GUI validation
+    
+    -- Check PvP status
     local gui = Player:FindFirstChild("PlayerGui")
     if gui then
         local main = gui:FindFirstChild("Main")
         if main then
-            if main:FindFirstChild("PvpDisabled") and main.PvpDisabled.Visible then
+            -- PvP Disabled check
+            local pvpDisabled = main:FindFirstChild("PvpDisabled")
+            if pvpDisabled and pvpDisabled.Visible then
                 self.Cache.PlayerStates[stateKey] = {valid = false, time = now}
                 return false
             end
-
+            
+            -- SafeZone check
             local bottomHUD = main:FindFirstChild("BottomHUDList")
             if bottomHUD then
                 local safeZone = bottomHUD:FindFirstChild("SafeZone")
@@ -183,105 +236,96 @@ function FastAttack:FastValidate(enemy)
             end
         end
     end
-
+    
     self.Cache.PlayerStates[stateKey] = {valid = true, time = now}
     return true
 end
 
+-- ==================== OPTIMIZED TARGET ACQUISITION ====================
 function FastAttack:GetTargets()
-    local now = tick()
-
-    -- Disable aggressive caching for debugging
     local targets = {}
     local maxDist = Config.AttackDistance
-    local count = 0
-
-    local function scan(folder)
+    
+    local function scanFolder(folder, folderName)
         if not folder then 
-            if Config.DebugPrint then
-                warn("[FastAttack] Folder is nil!")
-            end
+            FastUtils.DebugPrint("Folder", folderName, "is nil!")
             return 
         end
-
+        
         local children = folder:GetChildren()
-        if Config.DebugPrint then
-            print("[FastAttack] Scanning", folder.Name, "- Found", #children, "entities")
-        end
-
+        FastUtils.DebugPrint("Scanning", folderName, "- Found", #children, "entities")
+        
         for _, enemy in ipairs(children) do
-            if count >= Config.MaxTargets then break end
-
+            if #targets >= Config.MaxTargets then break end
+            
+            -- Get head for distance calculation
             local head = enemy:FindFirstChild("Head")
-            if head then
-                local dist = FastUtils.GetDistance(head.Position)
-
-                if dist < maxDist then
-                    local isValid = self:FastValidate(enemy)
-                    if Config.DebugPrint then
-                        print("[FastAttack] Enemy:", enemy.Name, "Distance:", math.floor(dist), "Valid:", isValid)
-                    end
-
-                    if isValid then
-                        count = count + 1
-                        local hum = enemy:FindFirstChild("Humanoid")
-                        table.insert(targets, {
-                            entity = enemy,
-                            head = head,
-                            distance = dist,
-                            hp = hum and hum.Health or 0
-                        })
-                    end
-                end
+            if not head then continue end
+            
+            -- Distance check first (fastest rejection)
+            local dist = FastUtils.GetDistance(head.Position)
+            if dist >= maxDist then continue end
+            
+            -- Validate enemy
+            local isValid = self:ValidateEnemy(enemy)
+            FastUtils.DebugPrint("  ->", enemy.Name, "Dist:", math.floor(dist), "Valid:", isValid)
+            
+            if isValid then
+                local hum = enemy:FindFirstChild("Humanoid")
+                table.insert(targets, {
+                    entity = enemy,
+                    head = head,
+                    distance = dist,
+                    hp = hum and hum.Health or 0
+                })
             end
         end
     end
-
-    -- Scan folders
-    if Config.DebugPrint then
-        print("[FastAttack] --- Scanning Start ---")
-        print("[FastAttack] AttackMob:", Config.AttackMob, "AttackPlayers:", Config.AttackPlayers)
+    
+    -- Scan appropriate folders
+    FastUtils.DebugPrint("=== Target Scan ===")
+    FastUtils.DebugPrint("AttackMob:", Config.AttackMob, "| AttackPlayers:", Config.AttackPlayers)
+    
+    if Config.AttackMob and Refs.Enemies then 
+        scanFolder(Refs.Enemies, "Enemies")
     end
-
-    if Config.AttackMob then 
-        scan(Refs.Enemies) 
+    
+    if Config.AttackPlayers and Refs.Characters then 
+        scanFolder(Refs.Characters, "Characters")
     end
-    if Config.AttackPlayers then 
-        scan(Refs.Characters) 
-    end
-
-    if Config.DebugPrint then
-        print("[FastAttack] Found", #targets, "valid targets")
-    end
-
+    
+    FastUtils.DebugPrint("Total valid targets:", #targets)
+    
     -- Sort by priority
-    if Config.PriorityMode == "Nearest" then
-        table.sort(targets, function(a, b) return a.distance < b.distance end)
-    elseif Config.PriorityMode == "Lowest HP" then
-        table.sort(targets, function(a, b) return a.hp < b.hp end)
-    elseif Config.PriorityMode == "Highest HP" then
-        table.sort(targets, function(a, b) return a.hp > b.hp end)
+    if #targets > 0 then
+        if Config.PriorityMode == "Nearest" then
+            table.sort(targets, function(a, b) return a.distance < b.distance end)
+        elseif Config.PriorityMode == "Lowest HP" then
+            table.sort(targets, function(a, b) return a.hp < b.hp end)
+        elseif Config.PriorityMode == "Highest HP" then
+            table.sort(targets, function(a, b) return a.hp > b.hp end)
+        end
     end
-
-    self.Cache.ValidTargets = targets
-    self.Cache.LastUpdate = now
-
+    
     return targets
 end
 
-function FastAttack:Strike(targets)
+-- ==================== ATTACK EXECUTION ====================
+function FastAttack:ExecuteAttack(targets)
     if not targets or #targets == 0 then return false end
-
+    
+    -- Prepare hit data
     local hitData = {}
-    for _, t in ipairs(targets) do
-        table.insert(hitData, {t.entity, t.head})
+    for _, target in ipairs(targets) do
+        table.insert(hitData, {target.entity, target.head})
     end
-
+    
     local basePart = targets[1].head
+    
+    -- Execute attack
     local success = false
-
-    -- Preemptive fire (no waiting)
     if Config.PreemptiveAttack then
+        -- Non-blocking attack
         task.spawn(function()
             pcall(function()
                 Refs.RegisterAttack:FireServer(Config.ClickDelay)
@@ -290,88 +334,100 @@ function FastAttack:Strike(targets)
         end)
         success = true
     else
+        -- Blocking attack with error handling
         success = pcall(function()
             Refs.RegisterAttack:FireServer(Config.ClickDelay)
             Refs.RegisterHit:FireServer(basePart, hitData)
         end)
     end
-
-    if not success then
+    
+    if success then
+        self.Stats.TotalAttacks = self.Stats.TotalAttacks + 1
+        self.Stats.APS = self.Stats.APS + 1
+    else
         self.Stats.Errors = self.Stats.Errors + 1
     end
-
+    
     return success
 end
 
-local lastCycle = 0
+-- ==================== MAIN ATTACK CYCLE ====================
+local lastCycleTime = 0
 function FastAttack:Cycle()
+    -- Check if attack is enabled
     if not Config.FastAttack then return end
+    
+    -- Check if character is alive
     if not FastUtils.IsAlive(Character) then return end
-
-    -- Check equipped weapon
+    
+    -- Check if weapon is equipped
     local tool = Character:FindFirstChildOfClass("Tool")
-    if not tool or tool.ToolTip == "Gun" then return end
-
-    -- Adaptive delay with randomization
+    if not tool then return end
+    if tool.ToolTip == "Gun" then return end -- Skip guns
+    
+    -- Delay management
     local now = tick()
     local delay = Config.FastAttackDelay
-
+    
     if Config.RandomizeDelay then
         delay = delay + (math.random() * Config.DelayVariance * 2 - Config.DelayVariance)
     end
-
-    if (now - lastCycle) < delay then return end
-    lastCycle = now
-
-    -- Get and strike targets
+    
+    if (now - lastCycleTime) < delay then return end
+    lastCycleTime = now
+    
+    -- Get targets and attack
     local targets = self:GetTargets()
     if #targets > 0 then
-        self:Strike(targets)
-        self.Stats.APS = self.Stats.APS + 1
+        self:ExecuteAttack(targets)
     end
 end
 
-local perfMonitor = tick()
-local tickCount = 0
+-- ==================== PERFORMANCE MONITORING ====================
+local perfStartTime = tick()
+local perfTickCount = 0
 
-function FastAttack:UpdateStats()
-    tickCount = tickCount + 1
+function FastAttack:UpdatePerformance()
+    perfTickCount = perfTickCount + 1
     local now = tick()
-
-    if (now - perfMonitor) >= 1 then
-        self.Stats.TPS = tickCount
-        tickCount = 0
-
-        -- Auto-adjust based on performance
+    
+    if (now - perfStartTime) >= 1 then
+        self.Stats.TPS = perfTickCount
+        perfTickCount = 0
+        
+        -- Auto-tune delay based on performance
         if self.Stats.TPS < 30 and Config.FastAttackDelay > 0.03 then
             Config.FastAttackDelay = Config.FastAttackDelay * 0.95
         elseif self.Stats.TPS > 100 then
             Config.FastAttackDelay = Config.FastAttackDelay * 1.05
         end
-
+        
         self.Stats.APS = 0
-        perfMonitor = now
+        perfStartTime = now
     end
 end
 
+-- ==================== START/STOP ====================
 function FastAttack:Start()
     if self.Running then return end
     self.Running = true
-
-    -- Primary loop (RenderStepped for max speed)
+    
+    FastUtils.DebugPrint("Starting Fast Attack...")
+    
+    -- Primary attack loop
     if Config.UseRenderStepped then
         self.Connection = Services.RunService.RenderStepped:Connect(function()
             self:Cycle()
-            self:UpdateStats()
+            self:UpdatePerformance()
         end)
     else
         self.Connection = Services.RunService.Heartbeat:Connect(function()
             self:Cycle()
-            self:UpdateStats()
+            self:UpdatePerformance()
         end)
     end
-
-    -- Backup loop with deferred threading
+    
+    -- Backup loop
     if Config.UseDeferredThread then
         task.defer(function()
             while self.Running do
@@ -382,56 +438,50 @@ function FastAttack:Start()
             end
         end)
     end
-
-    -- Cache cleanup
+    
+    -- Cache cleanup loop
     task.spawn(function()
         while self.Running do
-            task.wait(5)
-            if tick() - self.Cache.LastClear > 10 then
-                self.Cache.PlayerStates = {}
-                ValidationCache = {}
-                self.Cache.LastClear = tick()
-            end
+            task.wait(10)
+            self.Cache.PlayerStates = {}
+            self.Cache.LastClear = tick()
+            FastUtils.DebugPrint("Cache cleared")
         end
     end)
-
-    if Config.DebugPrint then
-        print("[FastAttack] Started")
-    end
+    
+    print("[FastAttack] Started successfully!")
 end
 
 function FastAttack:Stop()
+    if not self.Running then return end
     self.Running = false
+    
     if self.Connection then
         self.Connection:Disconnect()
         self.Connection = nil
     end
-
-    if Config.DebugPrint then
-        print("[FastAttack] Stopped")
-    end
+    
+    print("[FastAttack] Stopped")
 end
 
 function FastAttack:Toggle()
     Config.FastAttack = not Config.FastAttack
-
-    if Config.DebugPrint then
-        print("[FastAttack] Toggled:", Config.FastAttack)
-    end
+    print("[FastAttack] Toggled:", Config.FastAttack and "ON" or "OFF")
 end
 
+-- ==================== CONFIG UPDATE ====================
 function FastAttack:UpdateConfig(newConfig)
-    for k, v in pairs(newConfig) do
-        if Config[k] ~= nil then
-            Config[k] = v
-            
-            if Config.DebugPrint then
-                print("[FastAttack] Updated", k, "=", v)
-            end
+    if not newConfig then return end
+    
+    for key, value in pairs(newConfig) do
+        if Config[key] ~= nil then
+            local oldValue = Config[key]
+            Config[key] = value
+            FastUtils.DebugPrint("Config Update:", key, oldValue, "->", value)
         end
     end
-
-    -- Restart if FastAttack state changed
+    
+    -- Handle FastAttack state change
     if newConfig.FastAttack ~= nil then
         if newConfig.FastAttack and not self.Running then
             self:Start()
@@ -439,19 +489,25 @@ function FastAttack:UpdateConfig(newConfig)
             self:Stop()
         end
     end
-
-    if Config.DebugPrint then
-        print("[FastAttack] Config updated successfully")
-    end
+    
+    FastUtils.DebugPrint("Config updated successfully")
 end
 
+-- ==================== CHARACTER RESPAWN ====================
 Player.CharacterAdded:Connect(function(newChar)
     Character = newChar
+    FastUtils.DebugPrint("Character respawned, reinitializing...")
+    
     task.wait(0.5)
-
-    HRP = Character:WaitForChild("HumanoidRootPart", 5)
-    Humanoid = Character:WaitForChild("Humanoid", 5)
-
+    
+    -- Reinitialize references
+    local newRefs = InitializeReferences()
+    if newRefs then
+        Refs = newRefs
+        FastUtils.DebugPrint("References reinitialized")
+    end
+    
+    -- Restart if was running
     if FastAttack.Running then
         FastAttack:Stop()
         task.wait(0.3)
@@ -459,24 +515,34 @@ Player.CharacterAdded:Connect(function(newChar)
     end
 end)
 
+-- ==================== GLOBAL EXPORT ====================
 _ENV.FastAttackSkibidi = FastAttack
+
+-- Debug commands
+_ENV.FA_Toggle = function() FastAttack:Toggle() end
+_ENV.FA_Start = function() FastAttack:Start() end
+_ENV.FA_Stop = function() FastAttack:Stop() end
+_ENV.FA_Debug = function() 
+    Config.DebugMode = not Config.DebugMode
+    print("[FastAttack] Debug Mode:", Config.DebugMode and "ON" or "OFF")
+end
+_ENV.FA_Stats = function() 
+    print("=== FastAttack Stats ===")
+    print("Running:", FastAttack.Running)
+    print("TPS:", FastAttack.Stats.TPS)
+    print("APS:", FastAttack.Stats.APS)
+    print("Total Attacks:", FastAttack.Stats.TotalAttacks)
+    print("Errors:", FastAttack.Stats.Errors)
+    print("Delay:", Config.FastAttackDelay)
+    print("AttackMob:", Config.AttackMob)
+    print("AttackPlayers:", Config.AttackPlayers)
+    print("FastAttack:", Config.FastAttack)
+end
 
 -- Auto-start if enabled
 if Config.FastAttack then
     task.wait(1)
     FastAttack:Start()
-end
-
--- ==================== DEBUG COMMANDS ====================
-_ENV.FA_Toggle = function() FastAttack:Toggle() end
-_ENV.FA_Start = function() FastAttack:Start() end
-_ENV.FA_Stop = function() FastAttack:Stop() end
-_ENV.FA_Stats = function() 
-    print("=== FastAttack Stats ===")
-    print("TPS:", FastAttack.Stats.TPS)
-    print("APS:", FastAttack.Stats.APS)
-    print("Errors:", FastAttack.Stats.Errors)
-    print("Delay:", Config.FastAttackDelay)
 end
 
 return FastAttack
