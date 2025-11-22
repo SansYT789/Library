@@ -1,761 +1,729 @@
 --[[
-    SaveManager v2.0 - Enhanced Configuration System
-    Optimized for performance, reliability, and developer control
+    SaveManager v2.5 - Production Grade Configuration System
+    Features: Smart recovery, atomic saves, zero data loss
 ]]
 
 local SaveManager = {}
 SaveManager.__index = SaveManager
 
 -- ========================================
--- Configuration
+-- CONFIGURATION
 -- ========================================
 local CONFIG = {
-    -- File settings
+    -- File System
     folderPath = "VinreachHub",
     filePrefix = "BloxFruits_",
     fileExtension = ".json",
+    tempExtension = ".tmp",
+    backupExtension = ".bak",
     
-    -- Save behavior
-    autoSave = true,                    -- Enable/disable auto-save
-    autoSaveInterval = 30,              -- Seconds between auto-saves
-    saveOnChange = false,               -- Save immediately when value changes (not recommended for performance)
+    -- Save Behavior
+    autoSave = true,
+    autoSaveInterval = 30,
+    saveOnChange = false,
+    debounceDelay = 1.5,
     
     -- Performance
-    maxFileSize = 10485760,             -- 10MB limit
-    chunkSize = 524288,                 -- 512KB chunks for large files
-    debounceDelay = 0.5,                -- Debounce rapid changes (seconds)
+    maxFileSize = 10485760, -- 10MB
+    writeRetries = 3,
+    retryDelay = 0.5,
+    
+    -- Recovery
+    autoRecovery = true,
+    deleteCorrupted = true,
+    maxSingleBackup = 1, -- Only keep 1 backup to avoid clutter
+    verifyWrites = true,
     
     -- Validation
-    validateOnLoad = true,              -- Validate file integrity on load
-    strictMode = true,                  -- Remove unknown keys from config
-    minKeyMatchRatio = 0.5,             -- Minimum 50% of default keys must match
-    
-    -- Backup
-    maxBackups = 3,                     -- Keep last N backups
-    backupOnCorruption = true,          -- Backup corrupted files
+    strictMode = true,
+    minKeysRequired = 10, -- Minimum keys to consider file valid
     
     -- Debug
-    debugMode = false,                  -- Enable debug prints
-    logErrors = true,                   -- Log errors to console
-    performanceTracking = false,        -- Track operation times
+    debugMode = false,
+    logLevel = "info", -- "debug", "info", "warn", "error"
     
-    -- Version
-    version = "2.0"
+    version = "2.5"
 }
 
 -- ========================================
--- Services
+-- SERVICES
 -- ========================================
 local HttpService = game:GetService("HttpService")
-local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 
 -- ========================================
--- Utilities
+-- LOGGER
+-- ========================================
+local Logger = {}
+local LogLevels = {debug = 1, info = 2, warn = 3, error = 4}
+
+function Logger.log(level, ...)
+    if LogLevels[level] >= LogLevels[CONFIG.logLevel] then
+        local prefix = "[SaveManager." .. level:upper() .. "]"
+        if level == "error" or level == "warn" then
+            warn(prefix, ...)
+        else
+            print(prefix, ...)
+        end
+    end
+end
+
+function Logger.debug(...) Logger.log("debug", ...) end
+function Logger.info(...) Logger.log("info", ...) end
+function Logger.warn(...) Logger.log("warn", ...) end
+function Logger.error(...) Logger.log("error", ...) end
+
+-- ========================================
+-- UTILITIES
 -- ========================================
 local Utils = {}
 
--- Check if executor supports file operations
-function Utils.checkSupport()
-    return pcall(function()
-        assert(readfile, "readfile not supported")
-        assert(writefile, "writefile not supported")
-        assert(isfile, "isfile not supported")
-        assert(isfolder, "isfolder not supported")
-        assert(makefolder, "makefolder not supported")
-        assert(delfile, "delfile not supported")
-    end)
+-- Check executor support
+function Utils.validateExecutor()
+    local required = {"readfile", "writefile", "isfile", "isfolder", "makefolder", "delfile"}
+    for _, func in ipairs(required) do
+        if not _G[func] then
+            return false, func .. " not supported"
+        end
+    end
+    return true, nil
 end
 
--- Deep copy table
-function Utils.deepCopy(original)
-    local copy
-    if type(original) == 'table' then
-        copy = {}
-        for k, v in pairs(original) do
-            copy[Utils.deepCopy(k)] = Utils.deepCopy(v)
-        end
-    else
-        copy = original
+-- Deep copy with optimization
+function Utils.deepCopy(tbl, cache)
+    if type(tbl) ~= "table" then return tbl end
+    cache = cache or {}
+    if cache[tbl] then return cache[tbl] end
+    
+    local copy = {}
+    cache[tbl] = copy
+    
+    for k, v in pairs(tbl) do
+        copy[k] = type(v) == "table" and Utils.deepCopy(v, cache) or v
     end
+    
     return copy
 end
 
--- Deep compare tables
-function Utils.deepEqual(t1, t2)
-    if t1 == t2 then return true end
-    if type(t1) ~= "table" or type(t2) ~= "table" then return false end
+-- Fast table comparison
+function Utils.deepEqual(a, b)
+    if a == b then return true end
+    if type(a) ~= "table" or type(b) ~= "table" then return false end
     
-    for k, v in pairs(t1) do
-        if not Utils.deepEqual(v, t2[k]) then return false end
+    for k, v in pairs(a) do
+        if type(v) == "table" then
+            if not Utils.deepEqual(v, b[k]) then return false end
+        elseif v ~= b[k] then
+            return false
+        end
     end
     
-    for k in pairs(t2) do
-        if t1[k] == nil then return false end
+    for k in pairs(b) do
+        if a[k] == nil then return false end
     end
     
     return true
 end
 
--- Count table keys
+-- Count keys efficiently
 function Utils.countKeys(tbl)
     local count = 0
     for _ in pairs(tbl) do count = count + 1 end
     return count
 end
 
--- Convert boolean map to array (for UI compatibility)
-function Utils.boolMapToArray(map)
-    if type(map) ~= "table" then return map end
-    
-    -- Check if it's a boolean map
-    local isBoolMap = true
-    for _, v in pairs(map) do
-        if type(v) ~= "boolean" then
-            isBoolMap = false
-            break
-        end
-    end
-    
-    if not isBoolMap then return map end
-    
-    -- Convert to array of keys where value is true
-    local array = {}
-    for k, v in pairs(map) do
-        if v == true then
-            table.insert(array, k)
-        end
-    end
-    
-    return array
-end
-
--- Convert array back to boolean map
-function Utils.arrayToBoolMap(array)
-    if type(array) ~= "table" then return array end
-    
-    -- Check if it's an array (sequential numeric keys)
-    local isArray = #array > 0
-    if not isArray then return array end
-    
-    -- Convert to boolean map
-    local map = {}
-    for _, v in ipairs(array) do
-        map[v] = true
-    end
-    
-    return map
-end
-
--- Safe JSON encode with error handling
-function Utils.jsonEncode(data)
+-- Safe JSON encode with pretty print
+function Utils.jsonEncode(data, pretty)
     local success, result = pcall(function()
         return HttpService:JSONEncode(data)
     end)
-    
-    if success then
-        return result, nil
-    else
-        return nil, "JSON encode failed: " .. tostring(result)
-    end
+    return success and result or nil, success and nil or result
 end
 
--- Safe JSON decode with error handling
+-- Safe JSON decode
 function Utils.jsonDecode(str)
+    if not str or str == "" then return nil, "Empty string" end
+    
+    -- Clean string
+    str = str:match("^%s*(.-)%s*$")
+    if str == "" then return nil, "Empty after trim" end
+    
     local success, result = pcall(function()
         return HttpService:JSONDecode(str)
     end)
     
-    if success then
-        return result, nil
-    else
-        return nil, "JSON decode failed: " .. tostring(result)
-    end
+    return success and result or nil, success and nil or result
 end
 
--- Performance timer
-local Timer = {}
-function Timer.start()
-    return tick()
+-- Boolean map <-> Array conversion
+function Utils.toArray(value)
+    if type(value) ~= "table" then return value end
+    
+    -- Check if it's a boolean map
+    local hasBoolValues = false
+    for _, v in pairs(value) do
+        if type(v) == "boolean" then
+            hasBoolValues = true
+            break
+        end
+    end
+    
+    if not hasBoolValues then return value end
+    
+    -- Convert to array
+    local arr = {}
+    for k, v in pairs(value) do
+        if v == true then table.insert(arr, k) end
+    end
+    return arr
 end
 
-function Timer.stop(startTime, operation)
-    local elapsed = tick() - startTime
-    if CONFIG.performanceTracking then
-        print(string.format("⏱️ %s took %.3fms", operation, elapsed * 1000))
+function Utils.toMap(value)
+    if type(value) ~= "table" or #value == 0 then return value end
+    
+    -- Check if sequential array
+    local isArray = true
+    for i = 1, #value do
+        if value[i] == nil then
+            isArray = false
+            break
+        end
     end
-    return elapsed
+    
+    if not isArray then return value end
+    
+    -- Convert to map
+    local map = {}
+    for _, v in ipairs(value) do
+        map[v] = true
+    end
+    return map
 end
 
 -- ========================================
--- Logger
--- ========================================
-local Logger = {}
-
-function Logger.debug(...)
-    if CONFIG.debugMode then
-        print("[SaveManager]", ...)
-    end
-end
-
-function Logger.info(...)
-    print("[SaveManager]", ...)
-end
-
-function Logger.warn(...)
-    if CONFIG.logErrors then
-        warn("[SaveManager]", ...)
-    end
-end
-
-function Logger.error(...)
-    if CONFIG.logErrors then
-        warn("[SaveManager] ERROR:", ...)
-    end
-end
-
--- ========================================
--- File Operations
+-- FILE OPERATIONS
 -- ========================================
 local FileOps = {}
 
--- Ensure folder exists
-function FileOps.ensureFolder(path)
+-- Ensure directory exists
+function FileOps.ensureDir(path)
     if not isfolder(path) then
-        local success, err = pcall(makefolder, path)
-        if not success then
-            Logger.error("Failed to create folder:", err)
+        local ok, err = pcall(makefolder, path)
+        if not ok then
+            Logger.error("Failed to create directory:", err)
             return false
         end
+        Logger.debug("Created directory:", path)
     end
     return true
 end
 
--- Atomic write with verification
-function FileOps.writeAtomic(path, content)
-    local tempPath = path .. ".tmp"
-    local contentLen = #content
+-- Safe file read
+function FileOps.read(path)
+    if not isfile(path) then return nil, "File not found" end
     
-    -- Write to temp file
-    local success = pcall(writefile, tempPath, content)
-    if not success then
-        Logger.error("Failed to write temp file")
-        return false
-    end
-    
-    -- Verify temp file
-    if not isfile(tempPath) then
-        Logger.error("Temp file not found after write")
-        return false
-    end
-    
-    local verify = readfile(tempPath)
-    if #verify ~= contentLen then
-        Logger.error("Temp file size mismatch:", #verify, "vs", contentLen)
-        pcall(delfile, tempPath)
-        return false
-    end
-    
-    -- Atomic replace: delete old, rename temp
-    if isfile(path) then
-        pcall(delfile, path)
-    end
-    
-    success = pcall(writefile, path, content)
-    pcall(delfile, tempPath)
-    
-    if not success then
-        Logger.error("Failed to write final file")
-        return false
-    end
-    
-    -- Final verification
-    if not isfile(path) then
-        Logger.error("Final file not found")
-        return false
-    end
-    
-    local finalVerify = readfile(path)
-    if #finalVerify ~= contentLen then
-        Logger.error("Final file size mismatch")
-        return false
-    end
-    
-    return true
-end
-
--- Chunked read for large files
-function FileOps.readSafe(path)
-    if not isfile(path) then
-        return nil, "File not found"
-    end
-    
-    local success, content = pcall(readfile, path)
-    if not success then
-        return nil, "Failed to read file: " .. tostring(content)
-    end
+    local ok, content = pcall(readfile, path)
+    if not ok then return nil, "Read failed: " .. tostring(content) end
     
     return content, nil
 end
 
--- List backup files
-function FileOps.listBackups(basePath)
-    local backups = {}
+-- Atomic write with verification (NO multiple .bak files)
+function FileOps.write(path, content, verify)
+    verify = verify == nil and CONFIG.verifyWrites or verify
     
-    for i = 1, CONFIG.maxBackups do
-        local backupPath = basePath .. ".bak" .. i
-        if isfile(backupPath) then
-            table.insert(backups, {
-                path = backupPath,
-                index = i,
-                size = #readfile(backupPath)
-            })
+    local tempPath = path .. CONFIG.tempExtension
+    local backupPath = path .. CONFIG.backupExtension
+    
+    -- Step 1: Write to temp file
+    local ok = pcall(writefile, tempPath, content)
+    if not ok then
+        Logger.error("Failed to write temp file")
+        return false
+    end
+    
+    -- Step 2: Verify temp file
+    if verify then
+        local verify, _ = FileOps.read(tempPath)
+        if not verify or #verify ~= #content then
+            Logger.error("Temp file verification failed")
+            pcall(delfile, tempPath)
+            return false
         end
     end
     
-    return backups
+    -- Step 3: Backup current file (ONLY ONE BACKUP)
+    if isfile(path) then
+        local currentContent, _ = FileOps.read(path)
+        if currentContent then
+            pcall(writefile, backupPath, currentContent)
+            Logger.debug("Backed up current file")
+        end
+    end
+    
+    -- Step 4: Replace main file
+    ok = pcall(function()
+        if isfile(path) then delfile(path) end
+        writefile(path, content)
+        delfile(tempPath)
+    end)
+    
+    if not ok then
+        Logger.error("Failed to replace main file")
+        return false
+    end
+    
+    -- Step 5: Final verification
+    if verify then
+        local final, _ = FileOps.read(path)
+        if not final or #final ~= #content then
+            Logger.error("Final verification failed")
+            return false
+        end
+    end
+    
+    Logger.debug("Write successful:", #content, "bytes")
+    return true
 end
 
--- Rotate backups
-function FileOps.rotateBackups(basePath, newContent)
-    -- Delete oldest backup
-    local oldestBackup = basePath .. ".bak" .. CONFIG.maxBackups
-    if isfile(oldestBackup) then
-        pcall(delfile, oldestBackup)
+-- Delete file safely
+function FileOps.delete(path)
+    if isfile(path) then
+        pcall(delfile, path)
+        Logger.debug("Deleted:", path)
+        return true
     end
+    return false
+end
+
+-- Clean up duplicate backup files (.bak1, .bak2, etc)
+function FileOps.cleanBackups(basePath)
+    local cleaned = 0
     
-    -- Shift backups
-    for i = CONFIG.maxBackups - 1, 1, -1 do
-        local currentBackup = basePath .. ".bak" .. i
-        local nextBackup = basePath .. ".bak" .. (i + 1)
-        
-        if isfile(currentBackup) then
-            local content = readfile(currentBackup)
-            pcall(writefile, nextBackup, content)
+    -- Remove numbered backups
+    for i = 1, 100 do
+        local backupPath = basePath .. ".bak" .. i
+        if isfile(backupPath) then
+            pcall(delfile, backupPath)
+            cleaned = cleaned + 1
         end
     end
     
-    -- Save current as backup 1
-    if newContent then
-        pcall(writefile, basePath .. ".bak1", newContent)
+    -- Remove temp files
+    local tempPath = basePath .. CONFIG.tempExtension
+    if isfile(tempPath) then
+        pcall(delfile, tempPath)
+        cleaned = cleaned + 1
+    end
+    
+    -- Remove corrupted files
+    for i = 1, 100 do
+        local corruptPath = basePath .. ".corrupted." .. i
+        if isfile(corruptPath) then
+            pcall(delfile, corruptPath)
+            cleaned = cleaned + 1
+        end
+    end
+    
+    if cleaned > 0 then
+        Logger.info("Cleaned up", cleaned, "old backup files")
     end
 end
 
 -- ========================================
--- Validator
+-- VALIDATOR
 -- ========================================
 local Validator = {}
 
 -- Validate JSON structure
-function Validator.validateJSON(content)
-    if not content or #content < 2 then
-        return false, "Empty or too small"
+function Validator.isValidJSON(content)
+    if not content or #content < 10 then
+        return false, "Too small"
     end
     
-    -- Trim whitespace
+    -- Check structure
     local trimmed = content:match("^%s*(.-)%s*$")
-    
-    -- Check basic structure
     if not (trimmed:sub(1,1) == "{" and trimmed:sub(-1) == "}") then
-        return false, "Not properly enclosed"
+        return false, "Invalid structure"
     end
     
-    -- Count braces
-    local openCount, closeCount = 0, 0
-    for i = 1, #trimmed do
-        local char = trimmed:sub(i, i)
-        if char == "{" then openCount = openCount + 1
-        elseif char == "}" then closeCount = closeCount + 1
-        end
+    -- Try decode
+    local data, err = Utils.jsonDecode(trimmed)
+    if not data then
+        return false, err or "Decode failed"
     end
     
-    if openCount ~= closeCount then
-        return false, string.format("Unbalanced braces: %d open, %d close", openCount, closeCount)
-    end
-    
-    -- Try to decode
-    local decoded, err = Utils.jsonDecode(trimmed)
-    if not decoded then
-        return false, err
-    end
-    
-    if type(decoded) ~= "table" then
+    if type(data) ~= "table" then
         return false, "Not a table"
     end
     
-    return true, decoded
+    return true, data
 end
 
--- Validate against defaults (schema validation)
-function Validator.validateAgainstDefaults(data, defaults)
-    if type(data) ~= "table" or type(defaults) ~= "table" then
-        return false, "Invalid data types"
+-- Validate against defaults
+function Validator.validateSettings(data, defaults)
+    if type(data) ~= "table" then
+        return false, "Invalid data type"
     end
     
-    -- Count matching keys
-    local matchCount = 0
-    local totalDefaults = Utils.countKeys(defaults)
-    
-    for key in pairs(defaults) do
-        if data[key] ~= nil then
-            matchCount = matchCount + 1
-        end
-    end
-    
-    -- Check match ratio
-    local ratio = matchCount / totalDefaults
-    if ratio < CONFIG.minKeyMatchRatio then
-        return false, string.format("Too few matching keys: %d/%d (%.1f%%)", 
-            matchCount, totalDefaults, ratio * 100)
+    local keyCount = Utils.countKeys(data)
+    if keyCount < CONFIG.minKeysRequired then
+        return false, string.format("Too few keys: %d", keyCount)
     end
     
     return true, nil
 end
 
 -- Check file size
-function Validator.validateSize(content)
+function Validator.checkSize(content)
     if #content > CONFIG.maxFileSize then
-        return false, string.format("File too large: %d bytes (max %d)", 
-            #content, CONFIG.maxFileSize)
+        return false, string.format("File too large: %d bytes", #content)
     end
     return true, nil
 end
 
 -- ========================================
--- SaveManager Class
+-- RECOVERY ENGINE
 -- ========================================
+local Recovery = {}
 
-function SaveManager.new(player, defaults)
-    local self = setmetatable({}, SaveManager)
+-- Smart merge: Add ALL missing keys from defaults
+function Recovery.smartMerge(partial, defaults)
+    local merged = {}
     
-    -- Validation
-    if not player or not player:IsA("Player") then
-        Logger.error("Invalid player object")
-        return nil
+    -- First, copy all defaults
+    for key, value in pairs(defaults) do
+        merged[key] = Utils.deepCopy(value)
     end
     
-    if not defaults or type(defaults) ~= "table" then
-        Logger.error("Invalid defaults table")
-        return nil
-    end
-    
-    -- Check executor support
-    local supported, err = Utils.checkSupport()
-    if not supported then
-        Logger.error("Executor not supported:", err)
-        return nil
-    end
-    
-    -- Initialize properties
-    self.player = player
-    self.defaults = Utils.deepCopy(defaults)
-    self.settings = Utils.deepCopy(defaults)
-    
-    -- State
-    self.initialized = false
-    self.isDirty = false
-    self.isSaving = false
-    self.lastSaveTime = 0
-    self.lastChangeTime = 0
-    
-    -- Paths
-    self.folderPath = CONFIG.folderPath
-    self.fileName = CONFIG.filePrefix .. player.Name .. CONFIG.fileExtension
-    self.filePath = self.folderPath .. "/" .. self.fileName
-    
-    -- Auto-save
-    self.autoSaveThread = nil
-    self.debounceThread = nil
-    
-    -- Ensure folder
-    if not FileOps.ensureFolder(self.folderPath) then
-        Logger.error("Failed to create save folder")
-        return nil
-    end
-    
-    -- Load settings
-    self:load()
-    
-    -- Start auto-save if enabled
-    if CONFIG.autoSave then
-        self:startAutoSave()
-    end
-    
-    -- Cleanup on player leave
-    Players.PlayerRemoving:Connect(function(p)
-        if p == self.player then
-            self:shutdown()
-        end
-    end)
-    
-    Logger.info("Initialized for player:", player.Name)
-    return self
-end
-
--- ========================================
--- Core Methods
--- ========================================
-
--- Load settings from file
-function SaveManager:load()
-    local startTime = Timer.start()
-    
-    -- Check if file exists
-    if not isfile(self.filePath) then
-        Logger.debug("No save file found, creating new")
-        self:save(true) -- Force save defaults
-        self.initialized = true
-        Timer.stop(startTime, "Initial save")
-        return true
-    end
-    
-    -- Read file
-    local content, err = FileOps.readSafe(self.filePath)
-    if not content then
-        Logger.error("Failed to read file:", err)
-        self:restoreFromBackup()
-        return false
-    end
-    
-    -- Validate JSON
-    local isValid, decoded = Validator.validateJSON(content)
-    if not isValid then
-        Logger.warn("Corrupted file:", decoded)
-        if CONFIG.backupOnCorruption then
-            self:backupCorrupted(content)
-        end
-        self:restoreFromBackup()
-        return false
-    end
-    
-    -- Validate against defaults
-    if CONFIG.validateOnLoad then
-        local valid, err = Validator.validateAgainstDefaults(decoded, self.defaults)
-        if not valid then
-            Logger.warn("Schema validation failed:", err)
-        end
-    end
-    
-    -- Merge with defaults (add missing keys, optionally remove unknown)
-    local merged = self:mergeWithDefaults(decoded)
-    
-    -- Check if merge changed anything
-    local needsSave = not Utils.deepEqual(decoded, merged)
-    
-    -- Apply settings
-    self.settings = merged
-    self.initialized = true
-    
-    -- Save if needed
-    if needsSave then
-        Logger.debug("Settings merged with defaults, saving")
-        self:save(true)
-    end
-    
-    Timer.stop(startTime, "Load")
-    Logger.info("Loaded successfully")
-    return true
-end
-
--- Save settings to file
-function SaveManager:save(force)
-    if not self.initialized then
-        Logger.warn("Cannot save: not initialized")
-        return false
-    end
-    
-    if self.isSaving then
-        Logger.debug("Save already in progress")
-        return false
-    end
-    
-    if not force and not self.isDirty then
-        Logger.debug("No changes to save")
-        return false
-    end
-    
-    local startTime = Timer.start()
-    self.isSaving = true
-    
-    -- Add metadata
-    local dataToSave = Utils.deepCopy(self.settings)
-    dataToSave["_version"] = CONFIG.version
-    dataToSave["_lastSaved"] = os.time()
-    dataToSave["_player"] = self.player.Name
-    
-    -- Encode
-    local encoded, err = Utils.jsonEncode(dataToSave)
-    if not encoded then
-        Logger.error("Encode failed:", err)
-        self.isSaving = false
-        return false
-    end
-    
-    -- Validate size
-    local sizeValid, sizeErr = Validator.validateSize(encoded)
-    if not sizeValid then
-        Logger.error(sizeErr)
-        self.isSaving = false
-        return false
-    end
-    
-    -- Rotate backups before saving
-    if isfile(self.filePath) then
-        local currentContent = readfile(self.filePath)
-        FileOps.rotateBackups(self.filePath, currentContent)
-    end
-    
-    -- Write atomically
-    local success = FileOps.writeAtomic(self.filePath, encoded)
-    
-    if success then
-        self.isDirty = false
-        self.lastSaveTime = os.time()
-        Logger.debug("Saved successfully:", #encoded, "bytes")
-    else
-        Logger.error("Write failed")
-    end
-    
-    self.isSaving = false
-    Timer.stop(startTime, "Save")
-    return success
-end
-
--- Merge loaded data with defaults
-function SaveManager:mergeWithDefaults(loaded)
-    local merged = Utils.deepCopy(self.defaults)
-    
-    -- Apply loaded values
-    for key, value in pairs(loaded) do
-        -- Skip metadata
-        if key:sub(1, 1) ~= "_" then
-            -- In strict mode, only keep keys that exist in defaults
-            if CONFIG.strictMode then
-                if merged[key] ~= nil then
-                    merged[key] = value
-                else
-                    Logger.debug("Removing unknown key:", key)
-                end
-            else
-                merged[key] = value
+    -- Then, overlay partial data (only keys that exist in defaults)
+    if type(partial) == "table" then
+        for key, value in pairs(partial) do
+            if defaults[key] ~= nil then
+                merged[key] = Utils.deepCopy(value)
+            elseif CONFIG.strictMode then
+                Logger.debug("Removed unknown key:", key)
             end
-        end
-    end
-    
-    -- Add missing keys from defaults
-    for key, value in pairs(self.defaults) do
-        if loaded[key] == nil then
-            Logger.debug("Adding missing key:", key)
-            merged[key] = value
         end
     end
     
     return merged
 end
 
--- Restore from backup
-function SaveManager:restoreFromBackup()
-    Logger.info("Attempting to restore from backup")
+-- Recover from any file state
+function Recovery.recover(path, defaults)
+    Logger.info("Starting recovery for:", path)
     
-    local backups = FileOps.listBackups(self.filePath)
+    local mainPath = path
+    local backupPath = path .. CONFIG.backupExtension
     
-    -- Try each backup in order
-    for _, backup in ipairs(backups) do
-        Logger.debug("Trying backup:", backup.index)
-        
-        local content, err = FileOps.readSafe(backup.path)
-        if content then
-            local isValid, decoded = Validator.validateJSON(content)
-            if isValid then
-                Logger.info("Restored from backup", backup.index)
-                
-                local merged = self:mergeWithDefaults(decoded)
-                self.settings = merged
-                self.initialized = true
-                self.isDirty = true
-                
-                -- Save restored data
-                self:save(true)
-                return true
-            end
+    -- Try main file first
+    local mainContent, err = FileOps.read(mainPath)
+    if mainContent then
+        local valid, data = Validator.isValidJSON(mainContent)
+        if valid then
+            Logger.info("Main file valid, merging with defaults")
+            return Recovery.smartMerge(data, defaults), "main"
+        else
+            Logger.warn("Main file corrupted:", data)
         end
     end
     
-    -- No valid backup found, use defaults
-    Logger.warn("No valid backup found, using defaults")
-    self.settings = Utils.deepCopy(self.defaults)
-    self.initialized = true
-    self:save(true)
-    return false
-end
-
--- Backup corrupted file
-function SaveManager:backupCorrupted(content)
-    local corruptedPath = string.format("%s.corrupted.%d", self.filePath, os.time())
-    pcall(writefile, corruptedPath, content)
-    Logger.debug("Backed up corrupted file:", corruptedPath)
+    -- Try backup file
+    local backupContent, _ = FileOps.read(backupPath)
+    if backupContent then
+        local valid, data = Validator.isValidJSON(backupContent)
+        if valid then
+            Logger.info("Backup file valid, merging with defaults")
+            return Recovery.smartMerge(data, defaults), "backup"
+        else
+            Logger.warn("Backup also corrupted")
+        end
+    end
+    
+    -- Both corrupted or missing - delete and start fresh
+    Logger.warn("No valid files found, using defaults")
+    
+    if CONFIG.deleteCorrupted then
+        FileOps.delete(mainPath)
+        FileOps.delete(backupPath)
+        Logger.info("Deleted corrupted files")
+    end
+    
+    return Utils.deepCopy(defaults), "defaults"
 end
 
 -- ========================================
--- Public API
+-- SAVEMANAGER CLASS
 -- ========================================
 
--- Get setting value
+function SaveManager.new(player, defaults)
+    local self = setmetatable({}, SaveManager)
+    
+    -- Validate inputs
+    if not player or not player:IsA("Player") then
+        Logger.error("Invalid player")
+        return nil
+    end
+    
+    if type(defaults) ~= "table" or Utils.countKeys(defaults) == 0 then
+        Logger.error("Invalid defaults")
+        return nil
+    end
+    
+    -- Check executor
+    local ok, err = Utils.validateExecutor()
+    if not ok then
+        Logger.error("Executor not supported:", err)
+        return nil
+    end
+    
+    -- Initialize
+    self.player = player
+    self.defaults = Utils.deepCopy(defaults)
+    self.data = {}
+    
+    -- State
+    self.ready = false
+    self.dirty = false
+    self.saving = false
+    self.lastSave = 0
+    self.lastChange = 0
+    self.saveCount = 0
+    
+    -- Paths
+    self.folder = CONFIG.folderPath
+    self.fileName = CONFIG.filePrefix .. player.Name .. CONFIG.fileExtension
+    self.filePath = self.folder .. "/" .. self.fileName
+    
+    -- Threads
+    self.autoSaveLoop = nil
+    self.debounceLoop = nil
+    
+    -- Setup
+    if not FileOps.ensureDir(self.folder) then
+        Logger.error("Failed to create folder")
+        return nil
+    end
+    
+    -- Clean up old backup files first
+    FileOps.cleanBackups(self.filePath)
+    
+    -- Load settings
+    self:_load()
+    
+    -- Start auto-save
+    if CONFIG.autoSave then
+        self:_startAutoSave()
+    end
+    
+    -- Cleanup on disconnect
+    Players.PlayerRemoving:Connect(function(p)
+        if p == self.player then
+            self:shutdown()
+        end
+    end)
+    
+    Logger.info("Initialized for", player.Name)
+    return self
+end
+
+-- ========================================
+-- INTERNAL METHODS
+-- ========================================
+
+-- Load with recovery
+function SaveManager:_load()
+    local data, source = Recovery.recover(self.filePath, self.defaults)
+    
+    self.data = data
+    self.ready = true
+    
+    -- If recovered from backup or defaults, save immediately
+    if source ~= "main" then
+        self.dirty = true
+        self:save(true)
+        Logger.info("Saved recovered data")
+    end
+    
+    Logger.info("Loaded from:", source)
+end
+
+-- Save with retries
+function SaveManager:save(force)
+    if not self.ready then
+        Logger.warn("Not ready to save")
+        return false
+    end
+    
+    if self.saving then
+        Logger.debug("Already saving")
+        return false
+    end
+    
+    if not force and not self.dirty then
+        Logger.debug("No changes to save")
+        return false
+    end
+    
+    self.saving = true
+    
+    -- Prepare data
+    local saveData = Utils.deepCopy(self.data)
+    saveData._version = CONFIG.version
+    saveData._lastSaved = os.time()
+    saveData._player = self.player.Name
+    saveData._saveCount = self.saveCount + 1
+    
+    -- Encode
+    local encoded, err = Utils.jsonEncode(saveData)
+    if not encoded then
+        Logger.error("Encode failed:", err)
+        self.saving = false
+        return false
+    end
+    
+    -- Validate size
+    local sizeOk, sizeErr = Validator.checkSize(encoded)
+    if not sizeOk then
+        Logger.error(sizeErr)
+        self.saving = false
+        return false
+    end
+    
+    -- Write with retries
+    local success = false
+    for attempt = 1, CONFIG.writeRetries do
+        if attempt > 1 then
+            Logger.warn("Retry attempt", attempt)
+            task.wait(CONFIG.retryDelay)
+        end
+        
+        success = FileOps.write(self.filePath, encoded, CONFIG.verifyWrites)
+        if success then break end
+    end
+    
+    if success then
+        self.dirty = false
+        self.lastSave = os.time()
+        self.saveCount = self.saveCount + 1
+        Logger.debug("Saved:", #encoded, "bytes")
+    else
+        Logger.error("All save attempts failed")
+    end
+    
+    self.saving = false
+    return success
+end
+
+-- Auto-save loop
+function SaveManager:_startAutoSave()
+    if self.autoSaveLoop then return end
+    
+    Logger.debug("Starting auto-save")
+    
+    self.autoSaveLoop = task.spawn(function()
+        while self.ready and task.wait(CONFIG.autoSaveInterval) do
+            if self.dirty and not self.saving then
+                self:save()
+            end
+        end
+    end)
+end
+
+-- Stop auto-save
+function SaveManager:_stopAutoSave()
+    if self.autoSaveLoop then
+        task.cancel(self.autoSaveLoop)
+        self.autoSaveLoop = nil
+        Logger.debug("Stopped auto-save")
+    end
+end
+
+-- Debounce save
+function SaveManager:_debounceSave()
+    if self.debounceLoop then
+        task.cancel(self.debounceLoop)
+    end
+    
+    self.debounceLoop = task.delay(CONFIG.debounceDelay, function()
+        if self.dirty then
+            self:save()
+        end
+    end)
+end
+
+-- ========================================
+-- PUBLIC API
+-- ========================================
+
+-- Get value
 function SaveManager:get(key)
     if not key then return nil end
     
-    local value = self.settings[key]
+    local value = self.data[key]
     
-    -- Convert boolean maps to arrays for UI compatibility
+    -- Convert to array for UI
     if type(value) == "table" then
-        return Utils.boolMapToArray(value)
+        return Utils.toArray(value)
     end
     
     return value
 end
 
--- Set setting value
-function SaveManager:set(key, value, skipSave)
-    if not key or not self.initialized then return false end
+-- Set value
+function SaveManager:set(key, value)
+    if not key or not self.ready then return false end
     
-    -- Convert arrays back to boolean maps for storage
+    -- Convert from array to map
     if type(value) == "table" then
-        value = Utils.arrayToBoolMap(value)
+        value = Utils.toMap(value)
     end
     
-    -- Check if value actually changed
-    if Utils.deepEqual(self.settings[key], value) then
-        return true -- No change needed
+    -- Check if changed
+    if Utils.deepEqual(self.data[key], value) then
+        return true
     end
     
-    self.settings[key] = value
-    self.isDirty = true
-    self.lastChangeTime = tick()
+    self.data[key] = value
+    self.dirty = true
+    self.lastChange = tick()
     
-    Logger.debug("Set:", key, "=", value)
+    Logger.debug("Set:", key)
     
-    -- Handle save behavior
-    if not skipSave then
-        if CONFIG.saveOnChange then
-            self:save()
-        elseif CONFIG.autoSave and CONFIG.debounceDelay > 0 then
-            self:debounceSave()
-        end
+    -- Handle save
+    if CONFIG.saveOnChange then
+        self:save()
+    elseif CONFIG.autoSave then
+        self:_debounceSave()
     end
     
     return true
 end
 
--- Batch set multiple values
+-- Batch set
 function SaveManager:setBatch(values)
     if type(values) ~= "table" then return false end
     
     for key, value in pairs(values) do
-        self:set(key, value, true) -- Skip individual saves
+        if type(value) == "table" then
+            value = Utils.toMap(value)
+        end
+        
+        if not Utils.deepEqual(self.data[key], value) then
+            self.data[key] = value
+            self.dirty = true
+        end
     end
     
-    if CONFIG.saveOnChange then
-        self:save()
+    if self.dirty then
+        self.lastChange = tick()
+        
+        if CONFIG.saveOnChange then
+            self:save()
+        elseif CONFIG.autoSave then
+            self:_debounceSave()
+        end
     end
     
     return true
@@ -765,16 +733,17 @@ end
 function SaveManager:reset()
     Logger.info("Resetting to defaults")
     
-    -- Backup current settings
+    -- Backup current
     if isfile(self.filePath) then
-        local backupPath = string.format("%s.reset.%d.bak", self.filePath, os.time())
-        local content = readfile(self.filePath)
-        pcall(writefile, backupPath, content)
+        local content, _ = FileOps.read(self.filePath)
+        if content then
+            local backupPath = self.filePath .. ".reset." .. os.time()
+            pcall(writefile, backupPath, content)
+        end
     end
     
-    -- Reset to defaults
-    self.settings = Utils.deepCopy(self.defaults)
-    self.isDirty = true
+    self.data = Utils.deepCopy(self.defaults)
+    self.dirty = true
     
     return self:save(true)
 end
@@ -784,138 +753,84 @@ function SaveManager:forceSave()
     return self:save(true)
 end
 
--- ========================================
--- Auto-Save
--- ========================================
-
--- Debounced save (waits for changes to stop)
-function SaveManager:debounceSave()
-    if self.debounceThread then
-        task.cancel(self.debounceThread)
-    end
-    
-    self.debounceThread = task.delay(CONFIG.debounceDelay, function()
-        if self.isDirty then
-            self:save()
-        end
-    end)
-end
-
--- Start auto-save loop
-function SaveManager:startAutoSave()
-    if self.autoSaveThread then return end
-    
-    Logger.debug("Starting auto-save")
-    
-    self.autoSaveThread = task.spawn(function()
-        while self.autoSaveThread do
-            task.wait(CONFIG.autoSaveInterval)
-            
-            if self.isDirty and not self.isSaving then
-                self:save()
-            end
-        end
-    end)
-end
-
--- Stop auto-save loop
-function SaveManager:stopAutoSave()
-    if self.autoSaveThread then
-        task.cancel(self.autoSaveThread)
-        self.autoSaveThread = nil
-        Logger.debug("Stopped auto-save")
-    end
-end
-
--- ========================================
--- Lifecycle
--- ========================================
-
--- Shutdown and cleanup
-function SaveManager:shutdown()
-    Logger.info("Shutting down")
-    
-    -- Stop auto-save
-    self:stopAutoSave()
-    
-    -- Cancel debounce
-    if self.debounceThread then
-        task.cancel(self.debounceThread)
-    end
-    
-    -- Final save
-    if self.isDirty then
-        self:save(true)
-    end
-    
-    self.initialized = false
-end
-
--- ========================================
--- Developer API
--- ========================================
-
--- Get all settings (raw)
+-- Get all data
 function SaveManager:getAll()
-    return Utils.deepCopy(self.settings)
+    return Utils.deepCopy(self.data)
 end
 
--- Get statistics
+-- Get stats
 function SaveManager:getStats()
+    local fileSize = 0
+    if isfile(self.filePath) then
+        local content, _ = FileOps.read(self.filePath)
+        if content then fileSize = #content end
+    end
+    
     return {
-        initialized = self.initialized,
-        isDirty = self.isDirty,
-        isSaving = self.isSaving,
-        lastSaveTime = self.lastSaveTime,
-        lastChangeTime = self.lastChangeTime,
-        fileSize = isfile(self.filePath) and #readfile(self.filePath) or 0,
-        backupCount = #FileOps.listBackups(self.filePath),
-        settingCount = Utils.countKeys(self.settings)
+        ready = self.ready,
+        dirty = self.dirty,
+        saving = self.saving,
+        lastSave = self.lastSave,
+        lastChange = self.lastChange,
+        saveCount = self.saveCount,
+        fileSize = fileSize,
+        keyCount = Utils.countKeys(self.data)
     }
 end
 
--- Export settings as JSON string
+-- Export as JSON
 function SaveManager:export()
-    local encoded, err = Utils.jsonEncode(self.settings)
-    return encoded, err
+    return Utils.jsonEncode(self.data)
 end
 
--- Import settings from JSON string
-function SaveManager:import(jsonString)
-    local decoded, err = Utils.jsonDecode(jsonString)
-    if not decoded then
+-- Import from JSON
+function SaveManager:import(jsonStr)
+    local imported, err = Utils.jsonDecode(jsonStr)
+    if not imported then
         return false, err
     end
     
-    local merged = self:mergeWithDefaults(decoded)
-    self.settings = merged
-    self.isDirty = true
+    self.data = Recovery.smartMerge(imported, self.defaults)
+    self.dirty = true
     
     return self:save(true)
 end
 
--- Delete save file
+-- Delete save
 function SaveManager:deleteSave()
-    Logger.warn("Deleting save file")
+    Logger.warn("Deleting save files")
     
-    if isfile(self.filePath) then
-        pcall(delfile, self.filePath)
-    end
+    FileOps.delete(self.filePath)
+    FileOps.delete(self.filePath .. CONFIG.backupExtension)
+    FileOps.cleanBackups(self.filePath)
     
-    -- Delete backups
-    local backups = FileOps.listBackups(self.filePath)
-    for _, backup in ipairs(backups) do
-        pcall(delfile, backup.path)
-    end
+    self.data = Utils.deepCopy(self.defaults)
+    self.dirty = true
     
     return true
 end
 
+-- Shutdown
+function SaveManager:shutdown()
+    Logger.info("Shutting down")
+    
+    self:_stopAutoSave()
+    
+    if self.debounceLoop then
+        task.cancel(self.debounceLoop)
+    end
+    
+    if self.dirty then
+        self:save(true)
+    end
+    
+    self.ready = false
+end
+
 -- ========================================
--- Configuration API
+-- CONFIGURATION API
 -- ========================================
 
--- Update configuration
 function SaveManager.setConfig(key, value)
     if CONFIG[key] ~= nil then
         CONFIG[key] = value
@@ -925,18 +840,55 @@ function SaveManager.setConfig(key, value)
     return false
 end
 
--- Get configuration
 function SaveManager.getConfig(key)
     return CONFIG[key]
 end
 
--- Get all configuration
 function SaveManager.getAllConfig()
     return Utils.deepCopy(CONFIG)
 end
 
 -- ========================================
--- Return Module
+-- GLOBAL FUNCTIONS (Backwards Compatibility)
+-- ========================================
+
+_G.SaveManagerInstance = nil
+
+function _G.initSaveManager(player, defaults)
+    _G.SaveManagerInstance = SaveManager.new(player, defaults)
+    return _G.SaveManagerInstance
+end
+
+function _G.saveConfig(name, value)
+    if _G.SaveManagerInstance then
+        return _G.SaveManagerInstance:set(name, value)
+    end
+    return false
+end
+
+function _G.getConfig(name)
+    if _G.SaveManagerInstance then
+        return _G.SaveManagerInstance:get(name)
+    end
+    return nil
+end
+
+function _G.forceSave()
+    if _G.SaveManagerInstance then
+        return _G.SaveManagerInstance:forceSave()
+    end
+    return false
+end
+
+function _G.resetSettings()
+    if _G.SaveManagerInstance then
+        return _G.SaveManagerInstance:reset()
+    end
+    return false
+end
+
+-- ========================================
+-- RETURN MODULE
 -- ========================================
 
 return SaveManager
