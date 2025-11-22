@@ -63,6 +63,7 @@ local Config = {
     
     DevilFruits = {
         Enabled = false,
+        ShowUnknownFruitName = true, -- Show devil fruit id
         ShowDistance = true,
         Color = Color3.fromRGB(255, 255, 255),
     },
@@ -367,6 +368,90 @@ function ESPLibrary:UpdateBerryESP()
     end
 end
 
+local realFruitNameIds = {
+    ["rbxassetid://15124425041"] = "Rocket-Rocket",
+    ["rbxassetid://15123685330"] = "Spin-Spin",
+    ["rbxassetid://15123613404"] = "Blade-Blade",
+    ["rbxassetid://15104782377"] = "Blade-Blade",
+    ["rbxassetid://15123689268"] = "Spring-Spring",
+    ["rbxassetid://15123595806"] = "Bomb-Bomb",
+    ["rbxassetid://15123677932"] = "Smoke-Smoke",
+    ["rbxassetid://15124220207"] = "Spike-Spike",
+    ["rbxassetid://121545956771325"] = "Flame-Flame",
+    ["rbxassetid://15123673019"] = "Sand-Sand",
+    ["rbxassetid://15123618591"] = "Dark-Dark",
+    ["rbxassetid://77885466312115"] = "Eagle-Eagle",
+    ["rbxassetid://15112600534"] = "Diamond-Diamond",
+    ["rbxassetid://15123640714"] = "Light-Light",
+    ["rbxassetid://15123668008"] = "Rubber-Rubber",
+    ["rbxassetid://15123662036"] = "Ghost-Ghost",
+    ["rbxassetid://15123645682"] = "Magma-Magma",
+    ["rbxassetid://15123606541"] = "Buddha-Buddha", -- duplicate key overwritten here
+    ["rbxassetid://15123643097"] = "Love-Love",
+    ["rbxassetid://15123681598"] = "Spider-Spider",
+    ["rbxassetid://116828771482820"] = "Creation-Creation",
+    ["rbxassetid://15123679712"] = "Sound-Sound",
+    ["rbxassetid://15123654553"] = "Phoenix-Phoenix",
+    ["rbxassetid://15123656798"] = "Portal-Portal",
+    ["rbxassetid://15123670514"] = "Rumble-Rumble",
+    ["rbxassetid://15123652069"] = "Pain-Pain",
+    ["rbxassetid://15123587371"] = "Blizzard-Blizzard",
+    ["rbxassetid://15123633312"] = "Gravity-Gravity",
+    ["rbxassetid://15123648309"] = "Mammoth-Mammoth",
+    ["rbxassetid://15694681122"] = "T-Rex-T-Rex",
+    ["rbxassetid://15123624401"] = "Dough-Dough",
+    ["rbxassetid://15123675904"] = "Shadow-Shadow",
+    ["rbxassetid://10773719142"] = "Venom-Venom",
+    ["rbxassetid://15123616275"] = "Control-Control",
+    ["rbxassetid://11911905519"] = "Spirit-Spirit",
+    ["rbxassetid://15123638064"] = "Leopard-Leopard",
+    ["rbxassetid://15487764876"] = "Kitsune-Kitsune",
+    ["rbxassetid://115276580506154"] = "Yeti-Yeti",
+    ["rbxassetid://118054805452821"] = "Gas-Gas",
+    ["rbxassetid://95749033139458"] = "Dragon East-Dragon East"
+}
+
+local function isValidFruitName(name)
+    return type(name) == "string" and string.find(string.lower(name), "fruit")
+end
+
+local function normalizeIdValue(idValue)
+    local strId = tostring(idValue or "")
+    local assetId = strId:match("rbxassetid://(%d+)") or strId:match("(%d+)")
+    return assetId and ("rbxassetid://" .. assetId) or nil
+end
+
+local function getAccurateFruitName(v)
+    if not v then return "Fruit [ ??? ]" end
+
+    if isValidFruitName(v.Name) and v.Name ~= "Fruit" then
+        return v.Name
+    end
+
+    local fruitModel = v:FindFirstChild("Fruit") or v:WaitForChild("Fruit", 5)
+    if not fruitModel then return "Fruit [ ??? ]" end
+
+    local idleObj = fruitModel:FindFirstChildWhichIsA("Animation") or fruitModel:FindFirstChild("Fruit")
+    if not idleObj then return "Fruit [ ??? ]" end
+
+    local property = nil
+    if idleObj:IsA("Animation") then
+        property = "AnimationId"
+    elseif idleObj:IsA("MeshPart") then
+        property = "MeshId"
+    else
+        return "Fruit [ ??? ]"
+    end
+
+    local idValue = idleObj[property]
+    if not idValue or idValue == "" then return "Fruit [ ??? ]" end
+
+    local normalizedId = normalizeIdValue(idValue)
+    if not normalizedId then return "Fruit [ ??? ]" end
+
+    return realFruitNameIds[normalizedId] and ("Fruit [ " .. realFruitNameIds[normalizedId] .. " ]") or "Fruit [ ??? ]"
+end
+
 -- Devil Fruit ESP System
 function ESPLibrary:UpdateDevilFruitESP()
     if not Config.DevilFruits.Enabled then return end
@@ -379,16 +464,21 @@ function ESPLibrary:UpdateDevilFruitESP()
             if not v.Name:find("Fruit") or not v:FindFirstChild("Handle") then return end
             
             local handle = v.Handle
+            local name = v.Name
             
             if not isWithinRenderDistance(char.Head.Position, handle.Position) then
                 destroyESP(handle, "NameEspFruit")
                 return
             end
             
+            if Config.DevilFruits.ShowUnknownFruitName then
+                name = getAccurateFruitName(v)
+            end
+            
             updateOrCreateESP(handle, "NameEspFruit", function(label, isNew)
                 local distance = getDistance(char.Head.Position, handle.Position)
                 label.TextColor3 = Config.DevilFruits.Color
-                label.Text = v.Name .. "\n" .. distance .. "M"
+                label.Text = name .. "\n" .. distance .. "M"
             end)
         end)
     end
