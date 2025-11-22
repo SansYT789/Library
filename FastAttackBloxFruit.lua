@@ -1,6 +1,6 @@
--- ==================== FAST ATTACK SYSTEM V4 - FIXED & STREAMLINED ====================
--- FIXED: Player detection, target prioritization, continuous attack flow
--- OPTIMIZED: Removed unnecessary features, lighter code, accurate nearest targeting
+-- ==================== FAST ATTACK SYSTEM V4 - GHOST MOB FIX ====================
+-- FIXED: Ghost mob detection, proper skill blocking handling, persistent targeting
+-- The system now properly handles temporary attack blocks without marking mobs as invalid
 
 local _ENV = getgenv and getgenv() or getfenv(2)
 
@@ -13,18 +13,23 @@ local Config = {
     DebugMode = false,
 
     -- Performance
-    FastAttackDelay = 0.02,
+    FastAttackDelay = 0.05,
     ClickDelay = 0,
-    AttackDistance = 500,
+    AttackDistance = 350,
     MaxTargets = 15,
 
     -- Priority Settings
     PriorityMode = "Nearest",       -- "Nearest", "Lowest HP", "Highest HP"
-    
+
     -- Filters
     IgnoreForceField = true,
     RespectTeams = true,
     MinHealthPercent = 0.01,
+    
+    -- Ghost Mob Detection (NEW - CRITICAL FIX)
+    GhostMobTimeout = 15,           -- Time (seconds) before considering a mob truly "ghost"
+    GhostMobRetryDelay = 2,         -- Time to wait before retrying a suspected ghost mob
+    AllowAttackDuringSkills = true, -- Continue attacking even if hits don't register temporarily
 }
 
 -- ==================== SERVICES ====================
@@ -127,10 +132,102 @@ local FastAttack = {
     Cache = {
         SafeZoneCheck = {visible = false, time = 0},
         PvpCheck = {disabled = false, time = 0}
-    }
+    },
+    
+    -- NEW: Ghost Mob Tracking System
+    MobTracking = {}  -- Format: [mob] = {firstSeen, lastHealthChange, lastHealth, suspectedGhost, lastRetry}
 }
 
--- ==================== SIMPLE VALIDATION ====================
+-- ==================== GHOST MOB DETECTION (NEW - FIXED) ====================
+function FastAttack:TrackMobHealth(mob)
+    if not mob then return true end -- Allow attack if no tracking needed
+    
+    local hum = mob:FindFirstChild("Humanoid")
+    if not hum then return true end
+    
+    local currentHealth = hum.Health
+    local now = tick()
+    
+    -- Initialize tracking for new mobs
+    if not self.MobTracking[mob] then
+        self.MobTracking[mob] = {
+            firstSeen = now,
+            lastHealthChange = now,
+            lastHealth = currentHealth,
+            suspectedGhost = false,
+            lastRetry = 0,
+            attackAttempts = 0
+        }
+        Utils.DebugPrint("Started tracking:", mob.Name, "HP:", currentHealth)
+        return true -- Always allow first attack
+    end
+    
+    local track = self.MobTracking[mob]
+    
+    -- Check if health changed (successful hit)
+    if math.abs(currentHealth - track.lastHealth) > 0.1 then
+        Utils.DebugPrint("Health changed for", mob.Name, "from", track.lastHealth, "to", currentHealth)
+        track.lastHealthChange = now
+        track.lastHealth = currentHealth
+        track.suspectedGhost = false
+        track.attackAttempts = 0
+        return true -- Health changed, definitely not a ghost
+    end
+    
+    -- CRITICAL FIX: Don't immediately mark as ghost during temporary blocks
+    local timeSinceHealthChange = now - track.lastHealthChange
+    local timeSinceFirstSeen = now - track.firstSeen
+    
+    track.attackAttempts = track.attackAttempts + 1
+    
+    -- Allow attacks during the "grace period" (skills, loading, etc.)
+    if Config.AllowAttackDuringSkills and timeSinceHealthChange < Config.GhostMobRetryDelay then
+        Utils.DebugPrint("Grace period for", mob.Name, "- allowing attack despite no damage")
+        return true
+    end
+    
+    -- After grace period, check if it's suspected ghost
+    if timeSinceHealthChange >= Config.GhostMobRetryDelay and timeSinceHealthChange < Config.GhostMobTimeout then
+        -- Suspected ghost - retry periodically
+        if not track.suspectedGhost then
+            track.suspectedGhost = true
+            Utils.DebugPrint("Suspected ghost mob:", mob.Name, "- will retry periodically")
+        end
+        
+        -- Retry every GhostMobRetryDelay seconds
+        if (now - track.lastRetry) >= Config.GhostMobRetryDelay then
+            track.lastRetry = now
+            Utils.DebugPrint("Retrying suspected ghost:", mob.Name)
+            return true -- Retry attack
+        else
+            return false -- Skip this cycle
+        end
+    end
+    
+    -- After timeout, mark as true ghost
+    if timeSinceHealthChange >= Config.GhostMobTimeout then
+        if not track.confirmedGhost then
+            track.confirmedGhost = true
+            Utils.DebugPrint("CONFIRMED ghost mob:", mob.Name, "- ignoring permanently")
+        end
+        return false -- True ghost, don't attack
+    end
+    
+    -- Default: allow attack (we're still learning about this mob)
+    return true
+end
+
+-- Clean up tracking for dead/removed mobs
+function FastAttack:CleanupMobTracking()
+    for mob, _ in pairs(self.MobTracking) do
+        if not mob or not mob.Parent or not Utils.IsAlive(mob) then
+            Utils.DebugPrint("Cleanup tracking for:", mob and mob.Name or "removed mob")
+            self.MobTracking[mob] = nil
+        end
+    end
+end
+
+-- ==================== VALIDATION ====================
 function FastAttack:ValidateEnemy(enemy)
     if not enemy or enemy == Character then return false end
 
@@ -158,43 +255,41 @@ function FastAttack:ValidateEnemy(enemy)
     -- MOB VALIDATION
     if not isPlayer then
         if not Config.AttackMob then 
-            Utils.DebugPrint("Skipping mob (AttackMob disabled):", enemy.Name)
             return false 
         end
-        Utils.DebugPrint("Valid mob:", enemy.Name)
+        
+        -- NEW: Ghost mob check for NPCs/Mobs only
+        if not self:TrackMobHealth(enemy) then
+            Utils.DebugPrint("Skipping ghost mob:", enemy.Name)
+            return false
+        end
+        
         return true
     end
 
-    -- PLAYER VALIDATION
+    -- PLAYER VALIDATION (no ghost tracking needed)
     if not Config.AttackPlayers then 
-        Utils.DebugPrint("Skipping player (AttackPlayers disabled):", enemy.Name)
         return false 
     end
 
-    -- Self check
     if enemyPlayer == Player then 
-        Utils.DebugPrint("Skipping self")
         return false 
     end
 
-    -- Team check
     if Config.RespectTeams and Player.Team and enemyPlayer.Team then
         if enemyPlayer.Team == Player.Team then
-            Utils.DebugPrint("Skipping teammate:", enemy.Name)
             return false
         end
     end
 
-    -- PvP/SafeZone checks (cached for performance)
-    local now = tick()
-    
     -- Check cache first
+    local now = tick()
+
     if (now - self.Cache.SafeZoneCheck.time) > 0.5 then
         local gui = Player:FindFirstChild("PlayerGui")
         if gui then
             local main = gui:FindFirstChild("Main")
             if main then
-                -- Check SafeZone
                 local bottomHUD = main:FindFirstChild("BottomHUDList")
                 if bottomHUD then
                     local safeZone = bottomHUD:FindFirstChild("SafeZone")
@@ -208,11 +303,9 @@ function FastAttack:ValidateEnemy(enemy)
     end
 
     if self.Cache.SafeZoneCheck.visible then
-        Utils.DebugPrint("In SafeZone, skipping player")
         return false
     end
 
-    -- Check PvP disabled
     if (now - self.Cache.PvpCheck.time) > 0.5 then
         local gui = Player:FindFirstChild("PlayerGui")
         if gui then
@@ -228,11 +321,9 @@ function FastAttack:ValidateEnemy(enemy)
     end
 
     if self.Cache.PvpCheck.disabled then
-        Utils.DebugPrint("PvP disabled, skipping player")
         return false
     end
 
-    Utils.DebugPrint("Valid player:", enemy.Name)
     return true
 end
 
@@ -244,20 +335,15 @@ function FastAttack:GetTargets()
     local function scanFolder(folder, folderName)
         if not folder then return end
 
-        Utils.DebugPrint("Scanning", folderName)
-        
         for _, enemy in ipairs(folder:GetChildren()) do
             if #targets >= Config.MaxTargets then break end
 
-            -- Get head for distance
             local head = enemy:FindFirstChild("Head")
             if not head then continue end
 
-            -- Distance check FIRST (fastest rejection)
             local dist = Utils.GetDistance(head.Position)
             if dist >= maxDist then continue end
 
-            -- Then validate
             if not self:ValidateEnemy(enemy) then continue end
 
             local hum = enemy:FindFirstChild("Humanoid")
@@ -270,8 +356,6 @@ function FastAttack:GetTargets()
         end
     end
 
-    -- IMPORTANT: Scan order matters for consistent behavior
-    -- Always scan in same order each cycle
     if Config.AttackMob and Refs.Enemies then 
         scanFolder(Refs.Enemies, "Enemies")
     end
@@ -280,9 +364,6 @@ function FastAttack:GetTargets()
         scanFolder(Refs.Characters, "Characters")
     end
 
-    Utils.DebugPrint("Found", #targets, "valid targets")
-
-    -- Sort ONCE after all targets collected
     if #targets > 1 then
         if Config.PriorityMode == "Nearest" then
             table.sort(targets, function(a, b) return a.distance < b.distance end)
@@ -293,11 +374,6 @@ function FastAttack:GetTargets()
         end
     end
 
-    -- Debug first target
-    if #targets > 0 then
-        Utils.DebugPrint("Primary target:", targets[1].entity.Name, "Distance:", math.floor(targets[1].distance))
-    end
-
     return targets
 end
 
@@ -305,7 +381,6 @@ end
 function FastAttack:ExecuteAttack(targets)
     if not targets or #targets == 0 then return false end
 
-    -- Prepare hit data
     local hitData = {}
     for _, target in ipairs(targets) do
         table.insert(hitData, {target.entity, target.head})
@@ -313,7 +388,6 @@ function FastAttack:ExecuteAttack(targets)
 
     local basePart = targets[1].head
 
-    -- Execute attack (simple, no retries)
     local success = pcall(function()
         Refs.RegisterAttack:FireServer(Config.ClickDelay)
         Refs.RegisterHit:FireServer(basePart, hitData)
@@ -330,31 +404,30 @@ end
 
 -- ==================== MAIN CYCLE ====================
 local lastCycleTime = 0
+local cleanupTimer = 0
 
 function FastAttack:Cycle()
-    -- Check if enabled
     if not Config.FastAttack then return end
-
-    -- Check if alive
     if not Utils.IsAlive(Character) then return end
 
-    -- Check weapon
     local tool = Character:FindFirstChildOfClass("Tool")
     if not tool then return end
     if tool.ToolTip == "Gun" then return end
 
-    -- Delay check
     local now = tick()
     if (now - lastCycleTime) < Config.FastAttackDelay then return end
     lastCycleTime = now
-
-    -- Get fresh targets EVERY cycle (no caching issues)
-    local targets = self:GetTargets()
     
+    -- Periodic cleanup (every 5 seconds)
+    if (now - cleanupTimer) >= 5 then
+        self:CleanupMobTracking()
+        cleanupTimer = now
+    end
+
+    local targets = self:GetTargets()
+
     if #targets > 0 then
         self:ExecuteAttack(targets)
-    else
-        Utils.DebugPrint("No valid targets found")
     end
 end
 
@@ -380,7 +453,6 @@ function FastAttack:Start()
 
     Utils.DebugPrint("Starting Fast Attack V4...")
 
-    -- Single primary loop (RenderStepped for best performance)
     self.Connection = Services.RunService.RenderStepped:Connect(function()
         self:Cycle()
         self:UpdatePerformance()
@@ -404,7 +476,7 @@ end
 function FastAttack:Toggle()
     Config.FastAttack = not Config.FastAttack
     print("[FastAttack V4] Toggled:", Config.FastAttack and "ON" or "OFF")
-    
+
     if Config.FastAttack and not self.Running then
         self:Start()
     elseif not Config.FastAttack and self.Running then
@@ -423,7 +495,6 @@ function FastAttack:UpdateConfig(newConfig)
         end
     end
 
-    -- Handle FastAttack toggle
     if newConfig.FastAttack ~= nil then
         if newConfig.FastAttack and not self.Running then
             self:Start()
@@ -437,6 +508,9 @@ end
 Player.CharacterAdded:Connect(function(newChar)
     Character = newChar
     Utils.DebugPrint("Character respawned, reinitializing...")
+    
+    -- Clear mob tracking on respawn
+    FastAttack.MobTracking = {}
 
     task.wait(0.5)
 
@@ -456,7 +530,6 @@ end)
 -- ==================== GLOBAL EXPORT ====================
 _ENV.FastAttackV4 = FastAttack
 
--- Simple commands
 _ENV.FA_Toggle = function() 
     FastAttack:Toggle() 
 end
@@ -483,134 +556,50 @@ _ENV.FA_Stats = function()
     print("Total Attacks:", FastAttack.Stats.TotalAttacks)
     print("Errors:", FastAttack.Stats.Errors)
     print("---")
+    print("Tracked Mobs:", #FastAttack.MobTracking)
+    print("Ghost Timeout:", Config.GhostMobTimeout, "seconds")
+    print("Retry Delay:", Config.GhostMobRetryDelay, "seconds")
+    print("---")
     print("Delay:", Config.FastAttackDelay)
     print("Distance:", Config.AttackDistance)
     print("Max Targets:", Config.MaxTargets)
     print("Priority:", Config.PriorityMode)
-    print("---")
-    print("Attack Mobs:", Config.AttackMob)
-    print("Attack Players:", Config.AttackPlayers)
-    print("Respect Teams:", Config.RespectTeams)
 end
 
-_ENV.FA_AttackMobs = function(enabled)
-    if enabled == nil then
-        Config.AttackMob = not Config.AttackMob
-    else
-        Config.AttackMob = enabled == true or enabled == "true" or enabled == "on"
-    end
-    print("[FastAttack V4] Attack Mobs:", Config.AttackMob and "ON" or "OFF")
+_ENV.FA_ClearGhosts = function()
+    FastAttack.MobTracking = {}
+    print("[FastAttack V4] Cleared all ghost mob tracking")
 end
 
-_ENV.FA_AttackPlayers = function(enabled)
-    if enabled == nil then
-        Config.AttackPlayers = not Config.AttackPlayers
-    else
-        Config.AttackPlayers = enabled == true or enabled == "true" or enabled == "on"
-    end
-    print("[FastAttack V4] Attack Players:", Config.AttackPlayers and "ON" or "OFF")
-end
-
-_ENV.FA_Priority = function(mode)
-    if not mode then
-        print("Current Priority:", Config.PriorityMode)
-        print("Options: Nearest, Lowest HP, Highest HP")
-        return
-    end
-    
-    local validModes = {
-        ["Nearest"] = true,
-        ["Lowest HP"] = true,
-        ["Highest HP"] = true
-    }
-    
-    if validModes[mode] then
-        Config.PriorityMode = mode
-        print("[FastAttack V4] Priority set to:", mode)
-    else
-        print("[FastAttack V4] Invalid mode. Use: Nearest, Lowest HP, or Highest HP")
-    end
-end
-
-_ENV.FA_Delay = function(delay)
-    if not delay then
-        print("Current Delay:", Config.FastAttackDelay)
-        return
-    end
-    
-    delay = tonumber(delay)
-    if not delay or delay < 0 then
-        print("[FastAttack V4] Invalid delay")
-        return
-    end
-    
-    Config.FastAttackDelay = delay
-    print("[FastAttack V4] Delay set to:", delay)
-end
-
-_ENV.FA_Distance = function(distance)
-    if not distance then
-        print("Current Distance:", Config.AttackDistance)
-        return
-    end
-    
-    distance = tonumber(distance)
-    if not distance or distance <= 0 then
-        print("[FastAttack V4] Invalid distance")
-        return
-    end
-    
-    Config.AttackDistance = distance
-    print("[FastAttack V4] Distance set to:", distance)
-end
-
-_ENV.FA_MaxTargets = function(max)
-    if not max then
-        print("Current Max Targets:", Config.MaxTargets)
-        return
-    end
-    
-    max = tonumber(max)
-    if not max or max <= 0 then
-        print("[FastAttack V4] Invalid value")
-        return
-    end
-    
-    Config.MaxTargets = max
-    print("[FastAttack V4] Max Targets set to:", max)
-end
-
-_ENV.FA_Config = function(setting, value)
-    if not setting then
-        print("=== FastAttack V4 Configuration ===")
-        for key, val in pairs(Config) do
-            print(key, "=", tostring(val))
+_ENV.FA_ListTracked = function()
+    print("=== Tracked Mobs ===")
+    local count = 0
+    for mob, track in pairs(FastAttack.MobTracking) do
+        if mob and mob.Parent then
+            count = count + 1
+            local status = track.confirmedGhost and "GHOST" or (track.suspectedGhost and "SUSPECTED" or "OK")
+            print(string.format("%s [%s] - Attacks: %d, Time: %.1fs", 
+                mob.Name, status, track.attackAttempts, tick() - track.firstSeen))
         end
+    end
+    print("Total:", count, "mobs")
+end
+
+_ENV.FA_GhostTimeout = function(seconds)
+    if not seconds then
+        print("Current Ghost Timeout:", Config.GhostMobTimeout)
         return
     end
     
-    if Config[setting] == nil then
-        print("[FastAttack V4] Invalid setting:", setting)
-        return
+    seconds = tonumber(seconds)
+    if seconds and seconds > 0 then
+        Config.GhostMobTimeout = seconds
+        print("[FastAttack V4] Ghost Timeout set to:", seconds, "seconds")
     end
-    
-    if value == nil then
-        print(setting, "=", tostring(Config[setting]))
-        return
-    end
-    
-    -- Type conversion
-    if value == "true" then value = true
-    elseif value == "false" then value = false
-    elseif tonumber(value) then value = tonumber(value)
-    end
-    
-    FastAttack:UpdateConfig({[setting] = value})
-    print("[FastAttack V4]", setting, "set to", tostring(value))
 end
 
 _ENV.FA_Help = function()
-    print("=== FastAttack V4 - Fixed & Optimized ===")
+    print("=== FastAttack V4 ===")
     print("")
     print("BASIC COMMANDS:")
     print("  FA_Toggle()           - Toggle on/off")
@@ -618,19 +607,19 @@ _ENV.FA_Help = function()
     print("  FA_Stop()             - Stop attacking")
     print("  FA_Stats()            - Show statistics")
     print("")
-    print("CONFIGURATION:")
-    print("  FA_AttackMobs()       - Toggle mob attacking")
-    print("  FA_AttackPlayers()    - Toggle player attacking")
-    print("  FA_Priority('mode')   - Set priority (Nearest/Lowest HP/Highest HP)")
-    print("  FA_Delay(0.02)        - Set attack delay")
-    print("  FA_Distance(500)      - Set attack range")
-    print("  FA_MaxTargets(15)     - Set max targets")
-    print("  FA_Config()           - Show all settings")
+    print("GHOST MOB MANAGEMENT:")
+    print("  FA_ListTracked()      - List all tracked mobs")
+    print("  FA_ClearGhosts()      - Clear ghost mob tracking")
+    print("  FA_GhostTimeout(15)   - Set ghost detection timeout")
     print("")
     print("DEBUGGING:")
     print("  FA_Debug()            - Toggle debug mode")
     print("")
-    print("Example: FA_AttackPlayers(true) or FA_AttackPlayers('on')")
+    print("The system now properly handles:")
+    print("  - Skill usage blocking")
+    print("  - Mob repositioning/loading")
+    print("  - Temporary attack blocks")
+    print("  - True ghost mobs (15s timeout)")
 end
 
 -- ==================== AUTO-START ====================
@@ -640,6 +629,6 @@ if Config.FastAttack then
     print("[FastAttack V4] Auto-started")
 end
 
-print("[FastAttack V4] Loaded - Type FA_Help() for commands")
+print("FastAttack V4 Loaded - Type FA_Help() for commands")
 
 return FastAttack
