@@ -13,11 +13,11 @@ local Config = {
     ClickDelay = 0,
     AttackDistance = 65,
     MaxTargets = 15,
-    
+
     -- Optimization
     SpatialPartitionSize = 100,
     TargetCacheTime = 0.1,
-    
+
     -- Priority
     PriorityMode = "Nearest", -- "Nearest", "LowestHP", "HighestHP"
 
@@ -35,14 +35,14 @@ local Config = {
         AdaptiveLearning = true,
         ConfidenceThreshold = 3
     },
-    
+
     -- Gun Settings
     GunConfig = {
         Enabled = true,
         MaxDistance = 120,
         AutoShoot = true
     },
-    
+
     -- Combo System
     ComboConfig = {
         Enabled = true,
@@ -136,7 +136,7 @@ local function InitializeReferences()
     local RegisterAttack = Net:WaitForChild("RE/RegisterAttack", 10)
     local RegisterHit = Net:WaitForChild("RE/RegisterHit", 10)
     local ShootGunEvent = Net:FindFirstChild("RE/ShootGunEvent")
-    
+
     local GunValidator = Services.RS:FindFirstChild("Remotes")
     if GunValidator then
         GunValidator = GunValidator:FindFirstChild("Validator2")
@@ -154,7 +154,7 @@ local function InitializeReferences()
     local CombatFlags, HitFunction, ShootFunction
     Utils.SafePcall(function()
         CombatFlags = require(Modules.Flags).COMBAT_REMOTE_THREAD
-        
+
         local CombatController = Services.RS:FindFirstChild("Controllers")
         if CombatController then
             CombatController = CombatController:FindFirstChild("CombatController")
@@ -162,7 +162,7 @@ local function InitializeReferences()
                 ShootFunction = getupvalue(require(CombatController).Attack, 9)
             end
         end
-        
+
         local LocalScript = Player:WaitForChild("PlayerScripts"):FindFirstChildOfClass("LocalScript")
         if LocalScript and getsenv then
             HitFunction = getsenv(LocalScript)._G.SendHitsToServer
@@ -198,7 +198,7 @@ local GhostDetection = {
 
 function GhostDetection:Track(mob)
     if not Config.GhostDetection.Enabled or not mob then return true end
-    
+
     local hum = mob:FindFirstChild("Humanoid")
     if not hum then return true end
 
@@ -222,7 +222,7 @@ function GhostDetection:Track(mob)
     end
 
     local track = self.Tracked[mob]
-    
+
     -- Detect health change
     if math.abs(currentHealth - track.lastHealth) > 0.1 then
         track.lastHealthChange = now
@@ -230,20 +230,20 @@ function GhostDetection:Track(mob)
         track.successfulHits = track.successfulHits + 1
         track.suspectedGhost = false
         track.confirmedGhost = false
-        
+
         -- Record successful hit pattern
         if Config.GhostDetection.AdaptiveLearning then
             table.insert(track.pattern, {time = now, success = true})
         end
-        
+
         Utils.DebugPrint("Hit confirmed:", mob.Name, "HP:", currentHealth)
         return true
     end
 
     track.attackAttempts = track.attackAttempts + 1
-    
+
     local timeSinceHealthChange = now - track.lastHealthChange
-    
+
     -- Grace period (skills, animations, lag)
     if Config.GhostDetection.AllowDuringSkills and timeSinceHealthChange < Config.GhostDetection.RetryDelay then
         return true
@@ -255,7 +255,7 @@ function GhostDetection:Track(mob)
             track.suspectedGhost = true
             Utils.DebugPrint("Suspected ghost:", mob.Name)
         end
-        
+
         -- Retry with backoff
         if (now - track.lastRetry) >= Config.GhostDetection.RetryDelay then
             track.lastRetry = now
@@ -267,7 +267,7 @@ function GhostDetection:Track(mob)
     -- Confirmed ghost (adaptive threshold)
     local confidenceThreshold = Config.GhostDetection.ConfidenceThreshold
     local failureRate = track.attackAttempts > 0 and (1 - track.successfulHits / track.attackAttempts) or 1
-    
+
     if timeSinceHealthChange >= Config.GhostDetection.Timeout and failureRate > 0.9 then
         if not track.confirmedGhost then
             track.confirmedGhost = true
@@ -328,21 +328,21 @@ local FastAttack = {
 -- ==================== VALIDATION ====================
 function FastAttack:CheckStun()
     if not Character or not Humanoid then return false end
-    
+
     local tool = Character:FindFirstChildOfClass("Tool")
     if not tool then return false end
-    
+
     local stun = Character:FindFirstChild("Stun")
     local busy = Character:FindFirstChild("Busy")
-    
+
     if Humanoid.Sit and (tool.ToolTip == "Sword" or tool.ToolTip == "Melee" or tool.ToolTip == "Blox Fruit") then
         return false
     end
-    
+
     if (stun and stun.Value > 0) or (busy and busy.Value) then
         return false
     end
-    
+
     return true
 end
 
@@ -351,7 +351,7 @@ function FastAttack:ValidateEnemy(enemy)
 
     local hum = enemy:FindFirstChild("Humanoid")
     local hrp = enemy:FindFirstChild("HumanoidRootPart")
-    
+
     if not hum or not hrp then return false end
     if hum.Health <= 0 then return false end
 
@@ -420,14 +420,14 @@ end
 -- ==================== TARGET ACQUISITION (OPTIMIZED) ====================
 function FastAttack:GetTargets()
     if not HRP then return {} end
-    
+
     local now = tick()
-    
+
     -- Return cached targets if still valid
     if (now - Utils.Cache.LastUpdate) < Config.TargetCacheTime and #Utils.Cache.Targets > 0 then
         return Utils.Cache.Targets
     end
-    
+
     local targets = {}
     local maxDist = Config.AttackDistance
     local hrpPos = HRP.Position
@@ -448,10 +448,10 @@ function FastAttack:GetTargets()
 
             local head = enemy:FindFirstChild("Head")
             if not head then continue end
-            
+
             local hum = enemy:FindFirstChild("Humanoid")
             local dist = Utils.GetDistance(hrpPos, hrp.Position)
-            
+
             table.insert(targets, {
                 entity = enemy,
                 head = head,
@@ -481,27 +481,27 @@ function FastAttack:GetTargets()
             table.sort(targets, function(a, b) return a.hp > b.hp end)
         end
     end
-    
+
     -- Update cache
     Utils.Cache.Targets = targets
     Utils.Cache.LastUpdate = now
-    
+
     return targets
 end
 
 -- ==================== COMBO SYSTEM ====================
 function FastAttack:GetCombo()
     if not Config.ComboConfig.Enabled then return 1 end
-    
+
     local now = tick()
     local timeSinceLastHit = now - self.ComboState.LastHit
-    
+
     if timeSinceLastHit > Config.ComboConfig.ResetTime then
         self.ComboState.Current = 1
     else
         self.ComboState.Current = (self.ComboState.Current % Config.ComboConfig.MaxCombo) + 1
     end
-    
+
     self.ComboState.LastHit = now
     return self.ComboState.Current
 end
@@ -519,7 +519,7 @@ function FastAttack:ExecuteMeleeAttack(targets)
 
     local success = Utils.SafePcall(function()
         Refs.RegisterAttack:FireServer(Config.ClickDelay)
-        
+
         if Refs.CombatFlags and Refs.HitFunction then
             Refs.HitFunction(basePart, hitData)
         else
@@ -540,29 +540,29 @@ end
 function FastAttack:ExecuteFruitAttack(tool, targets)
     if not tool:FindFirstChild("LeftClickRemote") then return false end
     if not targets or #targets == 0 then return false end
-    
+
     local combo = self:GetCombo()
     local direction = (targets[1].hrp.Position - HRP.Position).Unit
-    
+
     local success = Utils.SafePcall(function()
         tool.LeftClickRemote:FireServer(direction, combo)
     end)
-    
+
     if success then
         self.Stats.TotalAttacks = self.Stats.TotalAttacks + 1
     end
-    
+
     return success
 end
 
 function FastAttack:ExecuteGunAttack(tool, target)
     if not Config.GunConfig.Enabled or not Refs.ShootGunEvent then return false end
-    
+
     local now = tick()
     local cooldown = tool:FindFirstChild("Cooldown") and tool.Cooldown.Value or 0.3
-    
+
     if (now - self.GunState.LastShot) < cooldown then return false end
-    
+
     local ShootType = self.GunState.SpecialShoots[tool.Name] or "Normal"
     if ShootType == "Position" or (ShootType == "TAP" and tool:FindFirstChild("RemoteEvent")) then
         if ShootType == "TAP" then
@@ -585,13 +585,13 @@ function FastAttack:ExecuteGunAttack(tool, target)
             task.wait(0.05)
             Services.VirtualInput:SendMouseButtonEvent(0, 0, 0, false, game, 1)
         end)
-    
+
         if success then
             self.GunState.LastShot = now
             self.Stats.TotalAttacks = self.Stats.TotalAttacks + 1
         end
     end
-    
+
     return success
 end
 
@@ -609,7 +609,7 @@ function FastAttack:Cycle()
 
     local toolTip = tool.ToolTip
     local targets = self:GetTargets()
-    
+
     if toolTip == "Gun" then
         if #targets > 0 then
             self:ExecuteGunAttack(tool, targets[1])
@@ -623,7 +623,7 @@ function FastAttack:Cycle()
             self:ExecuteMeleeAttack(targets)
         end
     end
-    
+
     self.LastAttack = now
 end
 
@@ -646,11 +646,10 @@ end
 function FastAttack:PeriodicCleanup()
     local now = tick()
     if (now - Utils.LastCleanup) < 5 then return end
-    
+
     GhostDetection:Cleanup()
     Utils.Cache.Targets = {}
-    collectgarbage("collect")
-    
+
     Utils.LastCleanup = now
     Utils.DebugPrint("Cleanup completed")
 end
@@ -660,7 +659,7 @@ function FastAttack:Start()
     if self.Running then return end
     self.Running = true
 
-    Utils.DebugPrint("Starting Fast Attack V5...")
+    Utils.DebugPrint("Starting Fast Attack...")
 
     self.Connection = Services.RunService.Heartbeat:Connect(function()
         self:Cycle()
@@ -668,7 +667,7 @@ function FastAttack:Start()
         self:PeriodicCleanup()
     end)
 
-    print("[FastAttack V5] Started!")
+    print("[FastAttack] Started!")
 end
 
 function FastAttack:Stop()
@@ -680,12 +679,12 @@ function FastAttack:Stop()
         self.Connection = nil
     end
 
-    print("[FastAttack V5] Stopped")
+    print("[FastAttack] Stopped")
 end
 
 function FastAttack:Toggle()
     Config.FastAttack = not Config.FastAttack
-    print("[FastAttack V5] Toggled:", Config.FastAttack and "ON" or "OFF")
+    print("[FastAttack] Toggled:", Config.FastAttack and "ON" or "OFF")
 
     if Config.FastAttack and not self.Running then
         self:Start()
@@ -762,16 +761,16 @@ _ENV.FA_Config = function(key, value)
         end
         return
     end
-    
+
     if Config[key] ~= nil then
         if value ~= nil then
             Config[key] = value
-            print("[FastAttack V5]", key, "set to:", value)
+            print("[FastAttack]", key, "set to:", value)
         else
-            print("[FastAttack V5]", key, "=", Config[key])
+            print("[FastAttack]", key, "=", Config[key])
         end
     else
-        print("[FastAttack V5] Unknown config key:", key)
+        print("[FastAttack] Unknown config key:", key)
     end
 end
 
@@ -782,12 +781,12 @@ _ENV.FA_Debug = function(enabled)
     else
         Config.DebugMode = enabled
     end
-    print("[FastAttack V5] Debug Mode:", Config.DebugMode and "ON" or "OFF")
+    print("[FastAttack ] Debug Mode:", Config.DebugMode and "ON" or "OFF")
 end
 
 -- Statistics
 _ENV.FA_Stats = function()
-    print("=== FastAttack V5 Statistics ===")
+    print("=== FastAttack Statistics ===")
     print("Status:", FastAttack.Running and "RUNNING" or "STOPPED")
     print("FastAttack:", Config.FastAttack and "ENABLED" or "DISABLED")
     print("")
@@ -813,7 +812,7 @@ end
 -- Ghost Management
 _ENV.FA_ClearGhosts = function()
     GhostDetection:Reset()
-    print("[FastAttack V5] Cleared all ghost mob tracking")
+    print("[FastAttack] Cleared all ghost mob tracking")
 end
 
 _ENV.FA_ListGhosts = function()
@@ -840,23 +839,23 @@ _ENV.FA_Preset = function(preset)
         safe = {FastAttackDelay = 0.1, AttackDistance = 50, MaxTargets = 10},
         pvp = {AttackPlayers = true, AttackMobs = false, RespectTeams = true, MaxTargets = 5}
     }
-    
+
     if not preset then
         print("Available presets: speed, balanced, safe, pvp")
         return
     end
-    
+
     if presets[preset] then
         FastAttack:UpdateConfig(presets[preset])
-        print("[FastAttack V5] Applied preset:", preset)
+        print("[FastAttack] Applied preset:", preset)
     else
-        print("[FastAttack V5] Unknown preset:", preset)
+        print("[FastAttack] Unknown preset:", preset)
     end
 end
 
 -- Help
 _ENV.FA_Help = function()
-    print("=== FastAttack V5 Commands ===")
+    print("=== FastAttack Commands ===")
     print("")
     print("BASIC CONTROLS:")
     print("  FA_Toggle()              - Toggle on/off")
@@ -881,9 +880,9 @@ end
 if Config.FastAttack then
     task.wait(1)
     FastAttack:Start()
-    print("[FastAttack V5] Auto-started")
+    print("[FastAttack] Auto-started")
 end
 
-print("FastAttack V5 Loaded - Type FA_Help() for commands")
+print("FastAttack Loaded")
 
 return FastAttack
