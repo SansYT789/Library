@@ -1,8 +1,3 @@
---[[
-    SaveManager v2.5 - Production Grade Configuration System
-    Features: Smart recovery, atomic saves, zero data loss
-]]
-
 local SaveManager = {}
 SaveManager.__index = SaveManager
 
@@ -42,7 +37,7 @@ local CONFIG = {
     debugMode = false,
     logLevel = "info", -- "debug", "info", "warn", "error"
     
-    version = "2.5"
+    version = "2.55"
 }
 
 -- ========================================
@@ -80,12 +75,27 @@ local Utils = {}
 
 -- Check executor support
 function Utils.validateExecutor()
-    local required = {"readfile", "writefile", "isfile", "isfolder", "makefolder", "delfile"}
-    for _, func in ipairs(required) do
-        if not _G[func] then
-            return false, func .. " not supported"
+    local env = getfenv()
+
+    -- List of APIs that executor MUST have
+    local required = {
+        "readfile",
+        "writefile",
+        "isfile",
+        "isfolder",
+        "makefolder",
+        "delfile"
+    }
+
+    for _, name in ipairs(required) do
+        -- Order of precedence: env → getgenv → _G
+        local fn = env[name] or getgenv()[name] or _G[name]
+
+        if type(fn) ~= "function" then
+            return false, name .. " not supported"
         end
     end
+
     return true, nil
 end
 
