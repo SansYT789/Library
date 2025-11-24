@@ -537,4 +537,10 @@ function Modules:GetBtnTweenStatus()
     return getgenv().TweenBtnFix
 end
 
+function Modules:setShouldTween(state)
+    if not state then state = false end
+
+    State.shouldTween = state
+end
+
 return Modules
