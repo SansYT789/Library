@@ -301,9 +301,9 @@ function ESPLibrary:UpdateChestESP()
 
             updateOrCreateESP(chest, "NameEspChest", function(label, isNew)
                 local distance = getDistance(char.Head.Position, chestPos)
-                local chestType = chest.Name:match("Diamond") and "Diamond" or
-                                 chest.Name:match("Gold") and "Gold" or
-                                 chest.Name:match("Silver") and "Silver" or "Default"
+                local chestType = chest.Name:match("Chest3") and "Diamond" or
+                                 chest.Name:match("Chest2") and "Gold" or
+                                 chest.Name:match("Chest1") and "Silver" or "Default"
 
                 label.TextColor3 = Config.Chests.Colors[chestType]
                 label.Text = chest.Name:gsub("Label", "") .. "\n" .. distance .. "M"
@@ -712,7 +712,7 @@ end
 -- Initialize
 function ESPLibrary:Init()
     self:StartUpdateLoop()
-    print("ESP Library v2.0 (Fixed) Initialized")
+    print("ESP Library Initialized")
 end
 
 function ESPLibrary:Destroy()
