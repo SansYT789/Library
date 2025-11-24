@@ -31,6 +31,7 @@ end
 
 local State = {
     currentTween = nil,
+    boatTween = nil,
     hoverBlock = nil,
     shouldTween = false,
     onFarm = false,
@@ -292,13 +293,23 @@ function Modules.Portal:RequestEntrance(portalPos, btnState)
 end
 
 Modules.Tween = {}
+Modules.Tween.isTweeningPlayer = false
+Modules.Tween.isTweeningBoat = false
 function Modules.Tween:ToTarget(targetCFrame, btnState)
     if not (HRP and Humanoid and Humanoid.Health > 0) then return end
     if not targetCFrame then return end
     if not State.hoverBlock then return end
 
+    -- Block if boat tween is running
+    if Modules.Tween.isTweeningBoat then
+        Modules:DebugPrint("🚫 Player tween blocked due to boat tween active")
+        return
+    end
+
     if getgenv().TweenBtnFix and State.shouldTween then return end
-    
+
+    Modules.Tween.isTweeningPlayer = true
+
     local dist = (targetCFrame.Position - HRP.Position).Magnitude
     
     -- Snap if close enough
@@ -343,6 +354,7 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
         while tween.PlaybackState == Enum.PlaybackState.Playing do
             if not State.shouldTween then
                 tween:Cancel()
+                Modules.Tween.isTweeningPlayer = false
 
                 if btnState then
                     getgenv().TweenBtnFix = false
@@ -363,6 +375,7 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
 
             getgenv().TweenBtnFix = false
             State.shouldTween = false
+            Modules.Tween.isTweeningPlayer = false
         end)
     end
 end
@@ -398,12 +411,19 @@ end
 function Modules.Tween:Boat(targetCFrame)
     if not (HRP and Humanoid and Humanoid.Health > 0) then return end
     if not targetCFrame then return end
+    
+    if Modules.Tween.isTweeningPlayer then
+        Modules:DebugPrint("🚫 Boat tween blocked due to player tween active")
+        return
+    end
 
     local myShip = Modules.CheckMyBoat()
     if not myShip then return end
     
     local vehicleSeat = myShip:FindFirstChild("VehicleSeat")
     if not vehicleSeat then return end
+    
+    Modules.Tween.isTweeningBoat = true
 
     local dist = (targetCFrame.Position - vehicleSeat.Position).Magnitude
     local boatSpeed = Config.DefaultBoatSpeed
@@ -411,7 +431,8 @@ function Modules.Tween:Boat(targetCFrame)
 
     local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
     local tween = Services.TweenService:Create(vehicleSeat, tweenInfo, {CFrame = targetCFrame})
-    
+    State.boatTween = tween
+
     tween:Play()
 
     -- Monitor for stop signal
@@ -419,6 +440,7 @@ function Modules.Tween:Boat(targetCFrame)
         while tween.PlaybackState == Enum.PlaybackState.Playing do
             if getgenv().StopBoatTween then
                 tween:Cancel()
+                Modules.Tween.isTweeningBoat = false
                 break
             end
             task.wait(0.1)
@@ -426,28 +448,48 @@ function Modules.Tween:Boat(targetCFrame)
     end)
 end
 
-function Modules.Tween:StopAll()
-    getgenv().TweenBtnFix = false
-    getgenv().StopBoatTween = true
-    State.shouldTween = false
+function Modules.Tween:StopAll(mode)
+    mode = mode or "all"
     
-    if State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
-        State.currentTween:Cancel()
-        State.currentTween = nil
+    if mode == "player" or mode == "all" then
+        getgenv().TweenBtnFix = false
+        State.shouldTween = false
+        
+        if State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
+            State.currentTween:Cancel()
+            State.currentTween = nil
+        end
+        
+        if HRP and HRP:FindFirstChild("VinreachHoverClip") then
+            HRP:FindFirstChild("VinreachHoverClip"):Destroy()
+        end
+
+        if Services.Workspace:FindFirstChild("HoverBlock") and State.hoverBlock and State.hoverBlock.Parent then
+            State.hoverBlock.CFrame = HRP.CFrame
+        end
+    end
+
+    if mode == "boat" or mode == "all" then
+        getgenv().StopBoatTween = true
+        
+        -- If there is a boat tween, you should have a boat tween track variable to cancel
+        -- If not, you should save the boat tween to State to cancel
+        if State.boatTween and State.boatTween.PlaybackState == Enum.PlaybackState.Playing then
+            State.boatTween:Cancel()
+            State.boatTween = nil
+        end
+    end
+
+    -- Reset flag after delay if stopped at all
+    if mode == "all" then
+        task.wait(0.1)
+        getgenv().StopBoatTween = false
+    elseif mode == "boat" then
+        task.wait(0.1)
+        getgenv().StopBoatTween = false
     end
     
-    if HRP:FindFirstChild("VinreachHoverClip") then
-        HRP:FindFirstChild("VinreachHoverClip"):Destroy()
-    end
-    
-    if Services.Workspace:FindFirstChild("HoverBlock") and State.hoverBlock and State.hoverBlock.Parent then
-        State.hoverBlock.CFrame = HRP.CFrame
-    end
-    
-    task.wait(0.1)
-    getgenv().StopBoatTween = false
-    
-    Modules:DebugPrint("🛑 All tweens stopped")
+    Modules:DebugPrint("🛑 Tween stop mode:", mode)
 end
 
 local function InitializeReferences()
@@ -529,8 +571,8 @@ function Modules:TweenByBoatToTarget(input)
     return Modules.Tween:Boat(input) 
 end
 
-function Modules:StopAllTween()
-    return Modules.Tween:StopAll()
+function Modules:StopTween(mode)
+    return Modules.Tween:StopAll(mode)
 end
 
 function Modules:GetBtnTweenStatus()
