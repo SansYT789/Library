@@ -180,7 +180,7 @@ function Modules.CheckMyBoat()
         -- Sitting in someone else's boat
         if Humanoid and Humanoid.Sit then
             local vehicleSeat = boat:FindFirstChild("VehicleSeat")
-            if vehicleSeat and (HRP.Position - vehicleSeat.Position).Magnitude <= 5 then
+            if vehicleSeat and (HRP.Position - vehicleSeat.Position).Magnitude <= 2.5 then
                 return boat
             end
         end
@@ -536,6 +536,11 @@ function Modules.Tween:ToTarget(targetCFrame, btnState, speedOverride)
     if getgenv().TweenBtnFix and State.shouldTween and not btnState then 
         return false 
     end
+    
+    local myBoat = Modules.CheckMyBoat()
+    if (Humanoid and Humanoid.Sit) and (myBoat and myBoat:FindFirstChild("VehicleSeat") and (HRP.Position - myBoat.VehicleSeat.Position).Magnitude <= 2.5) then
+        return false -- I was sitting on my boat and just turned off TweenPlayer
+    end
 
     local dist = (targetCFrame.Position - HRP.Position).Magnitude
     
@@ -721,7 +726,7 @@ function Modules.Tween:Boat(targetCFrame)
     end
     
     State.isTweeningBoat = true
-
+    
     local dist = (targetCFrame.Position - vehicleSeat.Position).Magnitude
     
     -- Snap if close
