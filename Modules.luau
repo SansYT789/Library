@@ -38,6 +38,8 @@ local State = {
     stopBoatTween = false
 }
 
+Modules.Initialized = false
+
 function Modules:DebugPrint(...)
     if Config.DebugInfo then
         print(string.format("[%.2f]", tick()), ...)
@@ -474,6 +476,9 @@ function Modules:Initialize()
     Modules:DebugPrint("✅ Hover block system initialized")
     
     Modules:DebugPrint("🚀 Tween Library fully initialized!")
+    
+    Modules.Initialized = true
+    _G.ModulesInitialized = true
     return true
 end
 
@@ -484,7 +489,7 @@ if not Refs then
     return
 end
 Modules:DebugPrint("Initialization successful!")
-print("Modules Loaded!")
+print("Modules Loaded")
 
 Player.CharacterAdded:Connect(function(newChar)
     Character = newChar
