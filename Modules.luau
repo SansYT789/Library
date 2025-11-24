@@ -484,6 +484,7 @@ if not Refs then
     return
 end
 Modules:DebugPrint("Initialization successful!")
+print("Modules Loaded!")
 
 Player.CharacterAdded:Connect(function(newChar)
     Character = newChar
@@ -515,11 +516,11 @@ function Modules:UpdateConfig(newConfig)
     end
 end
 
-function Modules:Tween(input, btn)
+function Modules:TweenToTarget(input, btn)
     return Modules.Tween:WithPortal(input, btn) 
 end
 
-function Modules:Tween2(input)
+function Modules:TweenByBoatToTarget(input)
     return Modules.Tween:Boat(input) 
 end
 
