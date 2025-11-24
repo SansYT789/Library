@@ -1060,12 +1060,6 @@ if not initSuccess then
     if not initSuccess then
         warn("❌ Critical failure! Module may not work correctly.")
     end
-else
-    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("  ✨ Tween Library v" .. Modules.Version .. " Loaded")
-    print("  📦 Status: Operational")
-    print("  🎯 Sea: " .. (Sea3 and "3" or Sea2 and "2" or Sea1 and "1" or "Unknown"))
-    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 end
 
 return Modules
