@@ -927,7 +927,7 @@ function Modules.Tween:Boat(targetCFrame)
     -- Smoother easing for boats
     local tweenInfo = TweenInfo.new(
         duration, 
-        Enum.EasingStyle.Linear,
+        Enum.EasingStyle.Linear
     )
 
     local tween = Services.TweenService:Create(vehicleSeat, tweenInfo, {CFrame = targetCFrame})
