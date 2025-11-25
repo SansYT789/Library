@@ -36,6 +36,7 @@ local Config = {
     -- Gun Settings
     AutoShootGuns = true,
     GunRange = 120,
+    SpecialShoots = {["Skull Guitar"] = "TAP", ["Bazooka"] = "Position", ["Cannon"] = "Position", ["Dragonstorm"] = "Overheat"},
     
     DebugMode = false
 }
@@ -366,41 +367,48 @@ local function GetGunValidator()
     return math.floor(v9 / v4 * 16777215), v7
 end
 
+local ShootDebounce = 0
 local function ExecuteGunAttack(tool, targetPos)
     if not Config.AutoShootGuns or not targetPos then return end
     
+    local now = tick()
     local cooldown = tool:FindFirstChild("Cooldown") and tool.Cooldown.Value or 0.3
-    
-    -- Update shot count for validation
-    pcall(function()
-        tool:SetAttribute("LocalTotalShots", (tool:GetAttribute("LocalTotalShots") or 0) + 1)
-    end)
-    
-    -- Try to use gun validator
-    pcall(function()
-        if Remotes.GunValidator and AdvancedFunctions.ShootFunction then
-            local v1, v2 = GetGunValidator()
-            if v1 then
-                Remotes.GunValidator:FireServer(v1, v2)
-            end
-        end
-    end)
+    if (now - ShootDebounce) < cooldown then return end
     
     -- Fire gun event
-    pcall(function()
-        if tool:FindFirstChild("RemoteEvent") then
-            tool.RemoteEvent:FireServer("TAP", targetPos)
-        elseif Remotes.ShootGunEvent then
-            Remotes.ShootGunEvent:FireServer(targetPos)
-        else
-            -- Fallback to virtual mouse click
+    local ShootType = Config.SpecialShoots[tool.Name] or "Normal"
+    if ShootType == "Position" or (ShootType == "TAP" and tool:FindFirstChild("RemoteEvent")) then
+        pcall(function()
+	        tool:SetAttribute("LocalTotalShots", (tool:GetAttribute("LocalTotalShots") or 0) + 1)
+        end)
+        
+        pcall(function()
+	        if Remotes.GunValidator and AdvancedFunctions.ShootFunction then
+	            local v1, v2 = GetGunValidator()
+	            if v1 then
+	                Remotes.GunValidator:FireServer(v1, v2)
+	            end
+	        end
+        end)
+	    
+	    if ShootType == "TAP" then
+	        pcall(function()
+	            tool.RemoteEvent:FireServer("TAP", targetPos)
+	        end)
+		else
+		    pcall(function()
+		        Remotes.ShootGunEvent:FireServer(targetPos)
+	    	end)
+		end
+		ShootDebounce = now
+    else
+        pcall(function()
             VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 1)
             task.wait(0.05)
             VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 1)
-        end
-    end)
-    
-    task.wait(cooldown)
+        end)
+        ShootDebounce = now
+    end
 end
 
 local LastAttack = 0
