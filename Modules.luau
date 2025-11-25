@@ -1,6 +1,6 @@
 local Modules = {}
 Modules.__index = Modules
-Modules.Version = "1.5"
+Modules.Version = "1.6"
 
 local Services = {
     Players = game:GetService("Players"),
@@ -15,37 +15,29 @@ local Config = {
     DebugInfo = false,
     PerformanceMode = false,
 
-    -- Tween Speeds (Optimized)
-    DefaultTweenSpeed = 350,
-    DefaultBoatSpeed = 180,
-    FastTweenSpeed = 500,
-    SlowTweenSpeed = 250,
+    -- Tween Speeds
+    Tween = {
+    	defaultTweenSpeed = 300,
+        fastTweenSpeed = 450,
+        slowTweenSpeed = 250,
+        defaultBoatTweenSpeed = 150
+    },
 
-    -- Distance Thresholds (Improved)
-    SnapDistance = 50,
-    MaxTweenDistance = 250,
-    PortalMinDistance = 850,
+    -- Distance Thresholds
+    SnapDistance = 40,
+    MaxTweenDistance = 200,
+    PortalMinDistance = 800,
 
     -- Safety & Validation
     EnableSafetyChecks = true,
     AutoRecoverHoverBlock = true,
     EnableNoclip = true,
-    EnableSmoothing = true,
-
-    -- Timing (Ultra-Smooth)
-    TweenUpdateRate = 0.08,
-    PortalRetryDelay = 0.12,
-    MaxPortalRetries = 3,
-    SmoothingFactor = 0.15,
 
     -- Boat Settings
-    BoatSnapDistance = 60,
+    BoatSnapDistance = 40,
     EnableBoatCollision = false,
-    BoatSmoothDocking = true,
 
     -- Advanced Features
-    PredictivePositioning = true,
-    AdaptiveSpeed = true,
     AntiStuck = true,
     StuckThreshold = 3,
 }
@@ -204,26 +196,13 @@ function Modules:GetTweenSpeed(speedType)
         end
     end
 
-    -- Adaptive speed based on distance (NEW in v1.5)
-    if Config.AdaptiveSpeed and speedType == "default" then
-        local dist = State.lastPosition and HRP and 
-                     (State.hoverBlock and State.hoverBlock.Position) and
-                     (HRP.Position - State.hoverBlock.Position).Magnitude or 0
-
-        if dist > 5000 then
-            return Config.FastTweenSpeed
-        elseif dist < 1000 then
-            return Config.SlowTweenSpeed
-        end
-    end
-
     -- Fallback to internal config
     if speedType == "fast" then
-        return Config.FastTweenSpeed
+        return Config.Tween.fastTweenSpeed
     elseif speedType == "slow" then
-        return Config.SlowTweenSpeed
+        return Config.Tween.slowTweenSpeed
     else
-        return Config.DefaultTweenSpeed
+        return Config.Tween.defaultTweenSpeed
     end
 end
 
@@ -234,7 +213,7 @@ function Modules:GetBoatSpeed()
             return externalSpeed
         end
     end
-    return Config.DefaultBoatSpeed
+    return Config.Tween.defaultBoatTweenSpeed
 end
 
 function Modules.CheckMyBoat()
@@ -294,16 +273,7 @@ function Modules.HoverBlock:Create()
     hoverBlock.Anchored = true
     hoverBlock.CanCollide = false
     hoverBlock.CanTouch = false
-    hoverBlock.CanQuery = false
     hoverBlock.Transparency = 1
-    hoverBlock.Material = Enum.Material.ForceField
-    hoverBlock.Massless = true
-
-    -- Enhanced identification
-    local tag = Instance.new("StringValue")
-    tag.Name = "ModuleVersion"
-    tag.Value = Modules.Version
-    tag.Parent = hoverBlock
 
     Modules:SafePcall(function()
         hoverBlock.Parent = Services.Workspace
@@ -315,28 +285,10 @@ function Modules.HoverBlock:Create()
 end
 
 function Modules.HoverBlock:Validate()
-    if not State.hoverBlock or not State.hoverBlock.Parent then
-        return false
-    end
-
-    if State.hoverBlock.Parent ~= Services.Workspace then
-        return false
-    end
+    if not State.hoverBlock or not State.hoverBlock.Parent then return false end
+    if State.hoverBlock.Parent ~= Services.Workspace then return false end
 
     return true
-end
-
-function Modules.HoverBlock:SmoothFollow()
-    if not Config.EnableSmoothing or not self:Validate() or not HRP then return end
-
-    -- Smooth interpolation for better visual experience
-    local current = State.hoverBlock.CFrame
-    local target = HRP.CFrame
-    local alpha = Config.SmoothingFactor
-
-    Modules:SafePcall(function()
-        State.hoverBlock.CFrame = current:Lerp(target, alpha)
-    end)
 end
 
 function Modules.HoverBlock:Initialize()
@@ -373,8 +325,7 @@ function Modules.HoverBlock:Initialize()
         end
 
         local updateCounter = 0
-
-        while task.wait(Config.TweenUpdateRate) do
+        while task.wait() do
             updateCounter = updateCounter + 1
 
             if not Modules:ValidateReferences() then
@@ -401,13 +352,7 @@ function Modules.HoverBlock:Initialize()
                             State.hoverBlock.CFrame = HRP.CFrame
                         else
                             -- Normal tween, move player to hover block
-                            if Config.EnableSmoothing and distance > 10 then
-                                -- Smooth approach for better visuals
-                                local alpha = math.clamp(Config.SmoothingFactor * 2, 0, 1)
-                                HRP.CFrame = HRP.CFrame:Lerp(State.hoverBlock.CFrame, alpha)
-                            else
-                                HRP.CFrame = State.hoverBlock.CFrame
-                            end
+                            HRP.CFrame = State.hoverBlock.CFrame
                         end
                     end)
                 else
@@ -418,7 +363,7 @@ function Modules.HoverBlock:Initialize()
             end
 
             -- Enhanced noclip handling (less frequent updates)
-            if Config.EnableNoclip and updateCounter % 3 == 0 then
+            if Config.EnableNoclip and updateCounter % 5 == 0 then
                 if State.lastNoclipState ~= shouldBeFarming then
                     State.lastNoclipState = shouldBeFarming
 
@@ -432,8 +377,8 @@ function Modules.HoverBlock:Initialize()
                 end
             end
 
-            -- Anti-stuck check (every 10 updates)
-            if Config.AntiStuck and updateCounter % 10 == 0 then
+            -- Anti-stuck check (every 20 updates)
+            if Config.AntiStuck and updateCounter % 20 == 0 then
                 if Modules:CheckStuck() then
                     Modules:DebugPrint("🔧 Attempting unstuck procedure...")
 
@@ -679,18 +624,6 @@ function Modules.Tween:ToTarget(targetCFrame, btnState, speedOverride)
     -- Instant snap for close distances
     if dist <= Config.SnapDistance then
         Modules:SafePcall(function()
-            if Config.EnableSmoothing and dist > 5 then
-                -- Smooth final approach
-                local steps = 3
-                for i = 1, steps do
-                    local alpha = i / steps
-                    State.hoverBlock.CFrame = State.hoverBlock.CFrame:Lerp(targetCFrame, alpha)
-                    task.wait(0.03)
-                end
-            else
-                State.hoverBlock.CFrame = targetCFrame
-            end
-
             if dist <= 15 then
                 HRP.CFrame = targetCFrame
             end
@@ -749,9 +682,6 @@ function Modules.Tween:ToTarget(targetCFrame, btnState, speedOverride)
 
     -- Monitor tween with enhanced checks
     task.spawn(function()
-        local checkInterval = Config.TweenUpdateRate
-        local lastDist = dist
-
         while tween and tween.PlaybackState == Enum.PlaybackState.Playing do
             -- Check for cancellation
             if not State.shouldTween then
@@ -774,14 +704,7 @@ function Modules.Tween:ToTarget(targetCFrame, btnState, speedOverride)
                 Modules:DebugPrint("⚠️ Tween cancelled: invalid references")
                 break
             end
-
-            -- Progress tracking (NEW in v1.5)
-            local currentDist = (targetCFrame.Position - HRP.Position).Magnitude
-            if currentDist < lastDist then
-                lastDist = currentDist
-            end
-
-            task.wait(checkInterval)
+            task.wait(0.1)
         end
     end)
 
@@ -824,35 +747,17 @@ function Modules.Tween:ToTarget(targetCFrame, btnState, speedOverride)
 end
 
 function Modules.Tween:WithPortal(targetCFrame, btnState, speedOverride)
-    if not targetCFrame or not Modules:ValidateReferences() then 
-        return false 
-    end
+    if not targetCFrame or not Modules:ValidateReferences() then  return false end
 
     local portalPos = Modules.Portal:GetClosest(targetCFrame)
 
     if portalPos then
         Modules:DebugPrint("🌀 Attempting portal shortcut...")
-
-        local retries = 0
-        local success = false
-
-        while retries < Config.MaxPortalRetries and not success do
-            success = Modules.Portal:RequestEntrance(portalPos, btnState)
-
-            if not success then
-                retries = retries + 1
-                if retries < Config.MaxPortalRetries then
-                    Modules:DebugPrint("⚠️ Retry", retries, "of", Config.MaxPortalRetries)
-                    task.wait(Config.PortalRetryDelay)
-                end
-            end
-        end
-
-        if success then
-            task.wait(Config.PortalRetryDelay)
+        
+        if Modules.Portal:RequestEntrance(portalPos, btnState) then
+            task.wait(0.1)
             return self:ToTarget(targetCFrame, btnState, speedOverride)
         else
-            Modules:DebugPrint("⚠️ Portal failed after", Config.MaxPortalRetries, "attempts, using direct path")
             return self:ToTarget(targetCFrame, btnState, speedOverride)
         end
     else
@@ -881,40 +786,16 @@ function Modules.Tween:Boat(targetCFrame)
         Modules:DebugPrint("⚠️ Boat has no VehicleSeat")
         return false
     end
-    
-    if not Modules.CheckInMyBoat() then
-        Modules:DebugPrint("⚠️ You are not in your boat yet")
-        return false
-    end
 
     State.isTweeningBoat = true
 
     local dist = (targetCFrame.Position - vehicleSeat.Position).Magnitude
 
-    -- Smooth docking for close distances (NEW in v1.5)
+    -- Smooth docking for close distances
     if dist <= Config.BoatSnapDistance then
-        if Config.BoatSmoothDocking and dist > 15 then
-            Modules:DebugPrint("🚢 Smooth docking initiated...")
-
-            -- Gradual approach for better docking
-            local steps = 4
-            for i = 1, steps do
-                if not Modules:ValidateReferences() then break end
-
-                local alpha = i / steps
-                local intermediateCFrame = vehicleSeat.CFrame:Lerp(targetCFrame, alpha)
-
-                Modules:SafePcall(function()
-                    vehicleSeat.CFrame = intermediateCFrame
-                end)
-
-                task.wait(0.1)
-            end
-        else
-            Modules:SafePcall(function()
-                vehicleSeat.CFrame = targetCFrame
-            end)
-        end
+        Modules:SafePcall(function()
+            vehicleSeat.CFrame = targetCFrame
+        end)
 
         State.isTweeningBoat = false
         Modules:DebugPrint("✅ Boat docked")
@@ -946,7 +827,7 @@ function Modules.Tween:Boat(targetCFrame)
                 Modules:DebugPrint("🛑 Boat tween stopped")
                 break
             end
-            task.wait(Config.TweenUpdateRate)
+            task.wait(0.1)
         end
     end)
 
@@ -1107,17 +988,17 @@ Player.CharacterAdded:Connect(function(newChar)
 end)
 
 function Modules:UpdateConfig(newConfig)
-    if not newConfig or type(newConfig) ~= "table" then 
+    if type(newConfig) ~= "table" then
         warn("⚠️ Invalid config provided")
         return false
     end
 
     local updated = 0
+    local tweenLocal = {defaultTweenSpeed=true, fastTweenSpeed=true, slowTweenSpeed=true, defaultBoatTweenSpeed=true}
     for key, value in pairs(newConfig) do
         if Config[key] ~= nil then
-            -- Handle nested tables
             if type(Config[key]) == "table" and type(value) == "table" then
-                for k, v in pairs(value) do
+                for k,v in pairs(value) do
                     Config[key][k] = v
                     updated = updated + 1
                 end
@@ -1126,6 +1007,12 @@ function Modules:UpdateConfig(newConfig)
                 updated = updated + 1
             end
             Modules:DebugPrint("⚙️ Config updated:", key, "=", tostring(value))
+        elseif tweenLocal[key] then
+            -- If the key belongs to tweenLocal but Config.Tween does not exist, initialize it.
+            Config.Tween = Config.Tween or {}
+            Config.Tween[key] = value
+            updated = updated + 1
+            Modules:DebugPrint("⚙️ Tween config updated:", key, "=", tostring(value))
         else
             Modules:DebugPrint("⚠️ Unknown config key:", key)
         end
@@ -1136,12 +1023,16 @@ function Modules:UpdateConfig(newConfig)
 end
 
 function Modules:GetConfig(key)
+    local tweenLocal = {defaultTweenSpeed=true, fastTweenSpeed=true, slowTweenSpeed=true, defaultBoatTweenSpeed=true}
     if key then
-        return Config[key]
+        if tweenLocal[key] then
+            return Config.Tween and Config.Tween[key]
+        else
+            return Config[key]
+        end
     else
-        -- Return copy of entire config
         local copy = {}
-        for k, v in pairs(Config) do
+        for k,v in pairs(Config) do
             copy[k] = v
         end
         return copy
@@ -1166,38 +1057,6 @@ end
 
 function Modules:StopTween(mode)
     return Modules.Tween:StopAll(mode)
-end
-
-function Modules:GetStatus()
-    return {
-        -- Core Info
-        initialized = State.isInitialized,
-        version = Modules.Version,
-
-        -- Statistics
-        tweenCount = State.tweenCount,
-        errorCount = State.errorCount,
-        successCount = State.successCount,
-        portalUseCount = State.portalUseCount,
-        avgTweenSpeed = State.avgTweenSpeed,
-
-        -- States
-        isTweeningPlayer = State.isTweeningPlayer,
-        isTweeningBoat = State.isTweeningBoat,
-        shouldTween = State.shouldTween,
-        onFarm = getgenv().OnFarm,
-        tweenBtnFix = getgenv().TweenBtnFix,
-
-        -- Validation
-        hoverBlockExists = State.hoverBlock and State.hoverBlock.Parent ~= nil,
-        characterAlive = Modules:IsAlive(),
-        currentSea = Sea3 and 3 or Sea2 and 2 or Sea1 and 1 or 0,
-
-        -- NEW in v1.5
-        stuckCounter = State.stuckCounter,
-        inBoat = Modules.CheckInMyBoat(),
-        uptime = State.isInitialized and (tick() - (State.tweenStartTime or tick())) or 0
-    }
 end
 
 function Modules:GetBtnTweenStatus()
@@ -1226,77 +1085,6 @@ end
 function Modules:EnableDebug(enable)
     Config.DebugInfo = enable == true
     Modules:DebugPrint("🐛 Debug mode:", Config.DebugInfo and "ENABLED" or "DISABLED")
-    print("🐛 Debug mode:", Config.DebugInfo and "ENABLED" or "DISABLED")
-end
-
-function Modules:EnablePerformanceMode(enable)
-    Config.PerformanceMode = enable == true
-
-    if Config.PerformanceMode then
-        Config.TweenUpdateRate = 0.15
-        Config.EnableSafetyChecks = false
-        Config.EnableSmoothing = false
-        Modules:DebugPrint("⚡ Performance mode ENABLED")
-    else
-        Config.TweenUpdateRate = 0.08
-        Config.EnableSafetyChecks = true
-        Config.EnableSmoothing = true
-        Modules:DebugPrint("🔒 Performance mode DISABLED (safety enabled)")
-    end
-end
-
-function Modules:ResetStatistics()
-    State.tweenCount = 0
-    State.errorCount = 0
-    State.successCount = 0
-    State.portalUseCount = 0
-    State.stuckCounter = 0
-    Modules:DebugPrint("📊 Statistics reset")
-end
-
-function Modules:GetStatistics()
-    return {
-        totalTweens = State.tweenCount,
-        totalErrors = State.errorCount,
-        totalSuccess = State.successCount,
-        portalsUsed = State.portalUseCount,
-        successRate = State.tweenCount > 0 and 
-                     string.format("%.1f%%", (State.successCount / State.tweenCount) * 100) or "N/A",
-        avgSpeed = State.avgTweenSpeed > 0 and 
-                  string.format("%.1f studs/s", State.avgTweenSpeed) or "N/A"
-    }
-end
-
-_G.Tween = function(input, btnState)
-    return Modules:TweenToTarget(input, btnState)
-end
-
-_G.toTarget = function(target, btnState)
-    return Modules.Tween:ToTarget(target, btnState)
-end
-
-_G.Tween2 = function(input)
-    return Modules:TweenByBoatToTarget(input)
-end
-
-_G.stopTweenAll = function()
-    return Modules:StopTween("all")
-end
-
-_G.getPortal = function(check)
-    return Modules.Portal:GetClosest(check)
-end
-
-_G.requestEntrance = function(checkPos, btnState)
-    return Modules.Portal:RequestEntrance(checkPos, btnState)
-end
-
-_G.checkMyBoat = function()
-    return Modules.CheckMyBoat()
-end
-
-_G.checkInMyBoat = function()
-    return Modules.CheckInMyBoat()
 end
 
 local initSuccess = Modules:Initialize()
