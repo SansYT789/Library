@@ -1,6 +1,6 @@
 local Modules = {}
 Modules.__index = Modules
-Modules.Version = "1.25"
+Modules.Version = "1.3"
 
 local Services = {
     Players = game:GetService("Players"),
@@ -24,7 +24,6 @@ local Config = {
     -- Distance Thresholds
     SnapDistance = 40,
     MaxTweenDistance = 200,
-    PortalMinDistance = 1000,
     
     -- Safety & Validation
     EnableSafetyChecks = true,
@@ -84,7 +83,7 @@ function Modules:DebugPrint(...)
         for i, v in ipairs(args) do
             formatted[i] = tostring(v)
         end
-        print(string.format("[%.3f] [TweenLib]", tick()), table.unpack(formatted))
+        print(string.format("[%.3f] [Modules]", tick()), table.unpack(formatted))
     end
 end
 
@@ -103,6 +102,15 @@ function Modules:SafePcall(func, ...)
         end
     end
     return success, result
+end
+
+local Remotes = Services.ReplicatedStorage:WaitForChild("Remotes", 3)
+if not Remotes then
+    Modules:DebugPrint("Remotes do not exist or load too slowly")
+end
+local CommF_ = Remotes:WaitForChild("CommF_", 3)
+if not CommF_ then
+    Modules:DebugPrint("CommF_ does not exist in Remotes")
 end
 
 function Modules:RecoverFromError()
@@ -187,6 +195,28 @@ function Modules.CheckMyBoat()
     end
     
     return nil
+end
+
+function Modules.CheckInMyBoat()
+    if not Modules:ValidateReferences() then return false end
+
+    local myBoat = Modules.CheckMyBoat()
+    if not myBoat then 
+        Modules:DebugPrint("⚠️ No boat found")
+        return false
+    end
+
+    local vehicleSeat = myBoat:FindFirstChild("VehicleSeat")
+    if not vehicleSeat then 
+        Modules:DebugPrint("⚠️ Boat has no VehicleSeat")
+        return false
+    end
+    
+    if Humanoid.Sit == true and (HRP.Position - vehicleSeat.Position).Magnitude <= 2.5 then
+        return true
+    end
+    
+    return false
 end
 
 Modules.HoverBlock = {}
@@ -288,7 +318,11 @@ function Modules.HoverBlock:Initialize()
                 -- Smooth position sync
                 if distance <= Config.MaxTweenDistance then
                     Modules:SafePcall(function()
-                        HRP.CFrame = State.hoverBlock.CFrame
+                        if Modules.CheckInMyBoat() then
+                            State.hoverBlock.CFrame = HRP.CFrame
+                        else
+                            HRP.CFrame = State.hoverBlock.CFrame
+                        end
                     end)
                 else
                     Modules:SafePcall(function()
@@ -363,25 +397,18 @@ function Modules.Portal:GetClosest(targetCFrame)
     local hrpPos = HRP.Position
     local directDist = (targetPos - hrpPos).Magnitude
 
-    -- Don't use portal for short distances
-    if directDist < Config.PortalMinDistance then
-        return nil
-    end
-
     for name, portalPos in pairs(seaTable) do
-        local distToPortal = (portalPos - hrpPos).Magnitude
-        local distFromPortalToTarget = (portalPos - targetPos).Magnitude
-        local totalDist = distToPortal + distFromPortalToTarget
-        
-        if totalDist < minDistance then
-            minDistance = totalDist
+        local distToPortal = (portalPos - targetPos).Magnitude
+
+        if distToPortal < minDistance then
+            minDistance = distToPortal
             closestPortal = portalPos
             closestName = name
         end
     end
     
-    -- Only return portal if it saves significant distance (at least 20%)
-    if closestPortal and minDistance < (directDist * 0.8) then
+    -- Only return portal if it saves significant distance
+    if closestPortal and minDistance < directDist then
         Modules:DebugPrint("📍 Portal found:", closestName, "| Saves:", math.floor(directDist - minDistance), "studs")
         return closestPortal
     end
@@ -409,23 +436,16 @@ function Modules.Portal:RequestEntrance(portalPos, btnState)
             
             if (templePos - HRP.Position).Magnitude > 10000 then
                 CommF_:InvokeServer("requestEntrance", templePos)
-                task.wait(0.12)
             end
 
-            if not State.hoverBlock then
-                State.isPortalActive = false
-                return
-            end
-
-            State.hoverBlock.CFrame = CFrame.new(28609.650390625, 14896.5458984375, 105.68901062011719)
+            HRP.CFrame = CFrame.new(28609.650390625, 14896.5458984375, 105.68901062011719)
             task.wait(0.15)
             
-            if (HRP.Position - Vector3.new(28609.6504, 14896.5459, 105.6890)).Magnitude <= 15 then
+            if (HRP.Position - Vector3.new(28609.6504, 14896.5459, 105.6890)).Magnitude <= 10 then
                 CommF_:InvokeServer("RaceV4Progress", "TeleportBack")
-                task.wait(0.12)
             end
             
-            completed = (HRP.Position - portalPos).Magnitude <= 100
+            completed = (HRP.Position - portalPos).Magnitude <= 5
 
         -- Dimension Shift (Cake Island Mirror)
         elseif portalPos == Vector3.new(-2097.3447265625, 4776.24462890625, -15013.4990234375) then
@@ -450,11 +470,9 @@ function Modules.Portal:RequestEntrance(portalPos, btnState)
             if (submarinePos - HRP.Position).Magnitude > 1205 then
                 CommF_:InvokeServer("requestEntrance", Vector3.new(-5058.7749, 314.5155, -3155.8833))
                 task.wait(0.15)
-
-                if State.hoverBlock then
-                    State.hoverBlock.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-                    task.wait(0.12)
-                end
+                
+                HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
+                task.wait(0.1)
             end
 
             -- Navigate to submarine worker
@@ -473,7 +491,7 @@ function Modules.Portal:RequestEntrance(portalPos, btnState)
             State.isPortalActive = tempState
             
             if (submarinePos - HRP.Position).Magnitude <= 15 then
-                local rep = game:GetService("ReplicatedStorage")
+                local rep = Services.ReplicatedStorage
                 local modules = rep:WaitForChild("Modules", 3)
                 if modules then
                     local net = modules:WaitForChild("Net", 3)
@@ -487,19 +505,17 @@ function Modules.Portal:RequestEntrance(portalPos, btnState)
                 end
             end
             
-            completed = (portalPos - HRP.Position).Magnitude <= 150
+            completed = (portalPos - HRP.Position).Magnitude <= 5
 
         -- Tiki Outpost
         elseif portalPos == Vector3.new(-16799.091796875, 84.32279968261719, 291.0728454589844) then
             CommF_:InvokeServer("requestEntrance", Vector3.new(-5058.7749, 314.5155, -3155.8833))
             task.wait(0.15)
-
-            if State.hoverBlock then
-                State.hoverBlock.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-                task.wait(0.12)
-            end
             
-            completed = (portalPos - HRP.Position).Magnitude <= 100
+            HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
+            task.wait(0.15)
+            
+            completed = (portalPos - HRP.Position).Magnitude <= 5
 
         -- Standard portal
         else
@@ -537,11 +553,6 @@ function Modules.Tween:ToTarget(targetCFrame, btnState, speedOverride)
         return false 
     end
     
-    local myBoat = Modules.CheckMyBoat()
-    if (Humanoid and Humanoid.Sit) and (myBoat and myBoat:FindFirstChild("VehicleSeat") and (HRP.Position - myBoat.VehicleSeat.Position).Magnitude <= 2.5) then
-        return false -- I was sitting on my boat and just turned off TweenPlayer
-    end
-
     local dist = (targetCFrame.Position - HRP.Position).Magnitude
     
     -- Instant snap for close distances
@@ -592,7 +603,7 @@ function Modules.Tween:ToTarget(targetCFrame, btnState, speedOverride)
     State.currentTween = tween
  
     -- Handle sitting characters (adjust Y position only)
-    if Humanoid.Sit then
+    if Humanoid.Sit == true then
         Modules:SafePcall(function()
             State.hoverBlock.CFrame = CFrame.new(
                 State.hoverBlock.Position.X, 
