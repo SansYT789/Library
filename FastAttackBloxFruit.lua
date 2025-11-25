@@ -473,6 +473,13 @@ function FastAttack:Toggle()
     print("[FastAttack] Toggled:", Config.Enabled and "ON" or "OFF")
 end
 
+function FastAttack:SetEnabled(state)
+    if Config.Enabled ~= state then
+        Config.Enabled = state
+        print("[FastAttack] Set to:", state and "ON" or "OFF")
+    end
+end
+
 function FastAttack:UpdateConfig(newConfig)
     if not newConfig or type(newConfig) ~= "table" then return end
     
