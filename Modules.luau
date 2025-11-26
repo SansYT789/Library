@@ -11,35 +11,10 @@ local Services = {
 }
 
 local Config = {
-    -- Debug & Performance
-    DebugInfo = false,
-    PerformanceMode = false,
-
-    -- Tween Speeds
     Tween = {
     	defaultTweenSpeed = 300,
-        fastTweenSpeed = 450,
-        slowTweenSpeed = 250,
         defaultBoatTweenSpeed = 150
-    },
-
-    -- Distance Thresholds
-    SnapDistance = 40,
-    MaxTweenDistance = 200,
-    PortalMinDistance = 800,
-
-    -- Safety & Validation
-    EnableSafetyChecks = true,
-    AutoRecoverHoverBlock = true,
-    EnableNoclip = true,
-
-    -- Boat Settings
-    BoatSnapDistance = 40,
-    EnableBoatCollision = false,
-
-    -- Advanced Features
-    AntiStuck = true,
-    StuckThreshold = 3,
+    }
 }
 
 local Player = Services.Players.LocalPlayer
@@ -49,96 +24,17 @@ local placeId = game.PlaceId
 local Sea1 = placeId == 2753915549
 local Sea2 = placeId == 4442272183
 local Sea3 = placeId == 7449423635
+if not Sea1 and not Sea2 and not Sea3 then warn("This is not Blox Fruits! Some features may not work.") end
 
-if not Sea1 and not Sea2 and not Sea3 then 
-    warn("⚠️ This is not Blox Fruits! Some features may not work.") 
-end
-
-local State = {
-    -- Tween States
-    currentTween = nil,
-    boatTween = nil,
-    hoverBlock = nil,
-
-    -- Flags
-    shouldTween = false,
-    onFarm = false,
-    tweenBtnFix = false,
-    stopBoatTween = false,
-    isInitialized = false,
-
-    -- Locks
-    isTweeningPlayer = false,
-    isTweeningBoat = false,
-    isPortalActive = false,
-
-    -- Counters
-    tweenCount = 0,
-    errorCount = 0,
-    successCount = 0,
-    portalUseCount = 0,
-
-    -- Advanced Tracking
-    lastPosition = nil,
-    lastMoveTime = 0,
-    stuckCounter = 0,
-    lastNoclipState = nil,
-    tweenStartTime = 0,
-    avgTweenSpeed = 0,
-}
+local State = {currentTween = nil, isInitialized = false, btnStateTween = false}
 
 local Remotes = Services.ReplicatedStorage:WaitForChild("Remotes", 5)
 local CommF_ = Remotes and Remotes:WaitForChild("CommF_", 5)
-
-if not CommF_ then
-    warn("⚠️ CommF_ not found! Portal features may not work.")
-end
-
-function Modules:DebugPrint(...)
-    if Config.DebugInfo then
-        local args = {...}
-        local formatted = {}
-        for i, v in ipairs(args) do
-            formatted[i] = tostring(v)
-        end
-        print(string.format("[%.3f] [TweenLib v%s]", tick(), Modules.Version), table.unpack(formatted))
-    end
-end
+if not CommF_ then warn("CommF_ not found! Portal features may not work.") end
 
 function Modules:SafePcall(func, ...)
     local success, result = pcall(func, ...)
-    if not success then
-        State.errorCount = State.errorCount + 1
-        Modules:DebugPrint("❌ Error #" .. State.errorCount .. ":", result)
-
-        -- Auto-recovery for critical errors
-        if State.errorCount > 15 and Config.EnableSafetyChecks then
-            Modules:DebugPrint("⚠️ Too many errors, attempting recovery...")
-            task.spawn(function()
-                Modules:RecoverFromError()
-            end)
-        end
-    else
-        State.successCount = State.successCount + 1
-    end
     return success, result
-end
-
-function Modules:RecoverFromError()
-    Modules:DebugPrint("🔄 Initiating error recovery...")
-
-    State.errorCount = 0
-    self:StopTween("all")
-
-    -- Reset stuck counter
-    State.stuckCounter = 0
-
-    if Config.AutoRecoverHoverBlock and State.hoverBlock then
-        task.wait(0.5)
-        Modules.HoverBlock:Initialize()
-    end
-
-    Modules:DebugPrint("✅ Recovery complete")
 end
 
 function Modules:IsAlive(char)
@@ -156,63 +52,11 @@ function Modules:ValidateReferences()
     return true
 end
 
-function Modules:CheckStuck()
-    if not Config.AntiStuck or not HRP then return false end
-
-    local currentPos = HRP.Position
-    local currentTime = tick()
-
-    if State.lastPosition then
-        local distance = (currentPos - State.lastPosition).Magnitude
-        local timeDiff = currentTime - State.lastMoveTime
-
-        -- If barely moved in the last second while tweening
-        if timeDiff > 1 and distance < 2 and State.shouldTween then
-            State.stuckCounter = State.stuckCounter + 1
-
-            if State.stuckCounter >= Config.StuckThreshold then
-                Modules:DebugPrint("⚠️ Stuck detected! Counter:", State.stuckCounter)
-                return true
-            end
-        else
-            State.stuckCounter = 0
-        end
-    end
-
-    State.lastPosition = currentPos
-    State.lastMoveTime = currentTime
-
-    return false
-end
-
-function Modules:GetTweenSpeed(speedType)
-    speedType = speedType or "default"
-
-    -- Check for external config first
-    if getConfig then
-        local externalSpeed = getConfig("Tween Speed")
-        if externalSpeed and type(externalSpeed) == "number" and externalSpeed > 0 then
-            return externalSpeed
-        end
-    end
-
-    -- Fallback to internal config
-    if speedType == "fast" then
-        return Config.Tween.fastTweenSpeed
-    elseif speedType == "slow" then
-        return Config.Tween.slowTweenSpeed
-    else
-        return Config.Tween.defaultTweenSpeed
-    end
+function Modules:GetTweenSpeed()
+    return Config.Tween.defaultTweenSpeed
 end
 
 function Modules:GetBoatSpeed()
-    if getConfig then
-        local externalSpeed = getConfig("Boat Tween Speed")
-        if externalSpeed and type(externalSpeed) == "number" and externalSpeed > 0 then
-            return externalSpeed
-        end
-    end
     return Config.Tween.defaultBoatTweenSpeed
 end
 
@@ -235,7 +79,7 @@ function Modules.CheckMyBoat()
         -- Sitting in someone else's boat (more lenient range)
         if Humanoid and Humanoid.Sit then
             local vehicleSeat = boat:FindFirstChild("VehicleSeat")
-            if vehicleSeat and (HRP.Position - vehicleSeat.Position).Magnitude <= 8 then
+            if vehicleSeat and (HRP.Position - vehicleSeat.Position).Magnitude <= 5 then
                 return boat
             end
         end
@@ -258,143 +102,6 @@ function Modules.CheckInMyBoat()
     end
 
     return false
-end
-
-Modules.HoverBlock = {}
-function Modules.HoverBlock:Create()
-    local oldBlock = Services.Workspace:FindFirstChild("HoverBlock")
-    if oldBlock then 
-        Modules:SafePcall(function() oldBlock:Destroy() end)
-    end
-
-    local hoverBlock = Instance.new("Part")
-    hoverBlock.Name = "HoverBlock"
-    hoverBlock.Size = Vector3.new(1, 1, 1)
-    hoverBlock.Anchored = true
-    hoverBlock.CanCollide = false
-    hoverBlock.CanTouch = false
-    hoverBlock.Transparency = 1
-
-    Modules:SafePcall(function()
-        hoverBlock.Parent = Services.Workspace
-    end)
-
-    State.hoverBlock = hoverBlock
-    Modules:DebugPrint("✨ Hover block created")
-    return hoverBlock
-end
-
-function Modules.HoverBlock:Validate()
-    if not State.hoverBlock or not State.hoverBlock.Parent then return false end
-    if State.hoverBlock.Parent ~= Services.Workspace then return false end
-
-    return true
-end
-
-function Modules.HoverBlock:Initialize()
-    local hoverBlock = self:Create()
-
-    if not hoverBlock then
-        warn("❌ Failed to create hover block!")
-        return nil
-    end
-
-    -- Heartbeat safety check with validation
-    Services.RunService.Heartbeat:Connect(function()
-        if not Config.AutoRecoverHoverBlock then return end
-
-        if not self:Validate() then
-            Modules:DebugPrint("🔄 Recovering hover block...")
-            State.hoverBlock = self:Create()
-
-            if HRP and State.hoverBlock then
-                State.hoverBlock.CFrame = HRP.CFrame
-            end
-        end
-    end)
-
-    -- Main update loop with enhanced smoothing
-    task.spawn(function()
-        repeat task.wait(0.1) until Character and Character:FindFirstChild("HumanoidRootPart")
-
-        Modules:DebugPrint("✅ Hover block update loop started")
-
-        -- Initial positioning
-        if self:Validate() and HRP then
-            State.hoverBlock.CFrame = HRP.CFrame
-        end
-
-        local updateCounter = 0
-        while task.wait() do
-            updateCounter = updateCounter + 1
-
-            if not Modules:ValidateReferences() then
-                getgenv().OnFarm = false
-                continue
-            end
-
-            if not self:Validate() then
-                continue
-            end
-
-            -- Update farm state
-            local shouldBeFarming = State.shouldTween == true
-            getgenv().OnFarm = shouldBeFarming
-
-            if shouldBeFarming then
-                local distance = (HRP.Position - State.hoverBlock.Position).Magnitude
-
-                -- Smooth position sync with boat detection
-                if distance <= Config.MaxTweenDistance then
-                    Modules:SafePcall(function()
-                        if Modules.CheckInMyBoat() then
-                            -- In boat, keep hover block at player
-                            State.hoverBlock.CFrame = HRP.CFrame
-                        else
-                            -- Normal tween, move player to hover block
-                            HRP.CFrame = State.hoverBlock.CFrame
-                        end
-                    end)
-                else
-                    Modules:SafePcall(function()
-                        State.hoverBlock.CFrame = HRP.CFrame
-                    end)
-                end
-            end
-
-            -- Enhanced noclip handling (less frequent updates)
-            if Config.EnableNoclip and updateCounter % 5 == 0 then
-                if State.lastNoclipState ~= shouldBeFarming then
-                    State.lastNoclipState = shouldBeFarming
-
-                    Modules:SafePcall(function()
-                        for _, part in ipairs(Character:GetChildren()) do
-                            if part:IsA("BasePart") then
-                                part.CanCollide = not shouldBeFarming
-                            end
-                        end
-                    end)
-                end
-            end
-
-            -- Anti-stuck check (every 20 updates)
-            if Config.AntiStuck and updateCounter % 20 == 0 then
-                if Modules:CheckStuck() then
-                    Modules:DebugPrint("🔧 Attempting unstuck procedure...")
-
-                    -- Try to unstuck by repositioning
-                    if State.hoverBlock then
-                        State.hoverBlock.CFrame = State.hoverBlock.CFrame + Vector3.new(0, 5, 0)
-                        task.wait(0.1)
-                    end
-
-                    State.stuckCounter = 0
-                end
-            end
-        end
-    end)
-
-    return hoverBlock
 end
 
 Modules.Portal = {}
@@ -437,467 +144,192 @@ function Modules.Portal:GetClosest(targetCFrame)
     if not seaTable then return nil end
 
     local closestPortal = nil
-    local closestName = nil
     local minDistance = math.huge
+
     local targetPos = targetCFrame.Position
     local hrpPos = HRP.Position
-    local directDist = (targetPos - hrpPos).Magnitude
-
-    -- Don't use portal for close distances
-    if directDist < Config.PortalMinDistance then
-        return nil
-    end
 
     for name, portalPos in pairs(seaTable) do
         local distToPortal = (portalPos - targetPos).Magnitude
-
-        -- Improved selection: consider both distance to portal and from portal to target
-        local totalPathDist = (portalPos - hrpPos).Magnitude + distToPortal
-
-        if distToPortal < minDistance and totalPathDist < directDist * 0.85 then
+        if distToPortal < minDistance then
             minDistance = distToPortal
             closestPortal = portalPos
-            closestName = name
         end
     end
 
-    -- Only return portal if it saves significant distance (15%+)
-    if closestPortal then
-        local savings = math.floor(directDist - minDistance)
-        Modules:DebugPrint("🌀 Portal found:", closestName, "| Saves:", savings, "studs")
+    if minDistance <= (targetPos - hrpPos).Magnitude then
         return closestPortal
     end
-
-    return nil
-end
-
-function Modules.Portal:RequestEntrance(portalPos, btnState)
-    if not portalPos or not Modules:ValidateReferences() then 
-        return false 
-    end
-
-    if not CommF_ then
-        Modules:DebugPrint("⚠️ CommF_ not available")
-        return false
-    end
-
-    if State.isPortalActive then
-        Modules:DebugPrint("⚠️ Portal already active, skipping...")
-        return false
-    end
-
-    State.isPortalActive = true
-    State.portalUseCount = State.portalUseCount + 1
-    local completed = false
-
-    local success, err = Modules:SafePcall(function()
-        -- Temple of Time → Great Tree
-        if portalPos == Vector3.new(3028.209228515625, 2280.84619140625, -7324.2880859375) then
-            local templePos = Vector3.new(28282.5703125, 14896.8505859375, 105.1042709350586)
-
-            if (templePos - HRP.Position).Magnitude > 10000 then
-                CommF_:InvokeServer("requestEntrance", templePos)
-                task.wait(0.1)
-            end
-
-            HRP.CFrame = CFrame.new(28609.650390625, 14896.5458984375, 105.68901062011719)
-            task.wait(0.15)
-
-            if (HRP.Position - Vector3.new(28609.6504, 14896.5459, 105.6890)).Magnitude <= 15 then
-                CommF_:InvokeServer("RaceV4Progress", "TeleportBack")
-                task.wait(0.12)
-            end
-
-            completed = (HRP.Position - portalPos).Magnitude <= 100
-
-        -- Dimension Shift (Cake Island Mirror)
-        elseif portalPos == Vector3.new(-2097.3447265625, 4776.24462890625, -15013.4990234375) then
-            task.wait(0.05)
-
-            local map = Services.Workspace:FindFirstChild("Map")
-            local cake = map and map:FindFirstChild("CakeLoaf")
-            local mirror = cake and cake:FindFirstChild("BigMirror")
-
-            if mirror and mirror:FindFirstChild("Other") and mirror.Other.Transparency == 0 then
-                if mirror:FindFirstChild("Main") then
-                    HRP.CFrame = mirror.Main.CFrame
-                    task.wait(0.1)
-                    completed = true
-                end
-            end
-
-        -- Submerged Island (Improved)
-        elseif portalPos == Vector3.new(10213.701171875, -1733.5025634765625, 9940.189453125) then
-            local submarinePos = Vector3.new(-16269.408203125, 23.979995727539062, 1371.662353515625)
-
-            if (submarinePos - HRP.Position).Magnitude > 1205 then
-                CommF_:InvokeServer("requestEntrance", Vector3.new(-5058.7749, 314.5155, -3155.8833))
-                task.wait(0.15)
-
-                HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-                task.wait(0.12)
-            end
-
-            -- Navigate to submarine worker
-            local tempState = State.isPortalActive
-            State.isPortalActive = false
-            Modules.Tween:ToTarget(CFrame.new(submarinePos), btnState)
-
-            -- Wait for arrival with timeout
-            local timeout = 35
-            local elapsed = 0
-            while (submarinePos - HRP.Position).Magnitude > 20 and elapsed < timeout do
-                task.wait(0.3)
-                elapsed = elapsed + 0.3
-            end
-
-            State.isPortalActive = tempState
-
-            if (submarinePos - HRP.Position).Magnitude <= 20 then
-                local rep = Services.ReplicatedStorage
-                local modules = rep:FindFirstChild("Modules")
-                if modules then
-                    local net = modules:FindFirstChild("Net")
-                    if net then
-                        local rf = net:FindFirstChild("RF/SubmarineWorkerSpeak")
-                        if rf then
-                            rf:InvokeServer("TravelToSubmergedIsland")
-                            task.wait(0.25)
-                        end
-                    end
-                end
-            end
-
-            task.wait(0.1)
-            completed = (portalPos - HRP.Position).Magnitude <= 200
-
-        -- Tiki Outpost
-        elseif portalPos == Vector3.new(-16799.091796875, 84.32279968261719, 291.0728454589844) then
-            CommF_:InvokeServer("requestEntrance", Vector3.new(-5058.7749, 314.5155, -3155.8833))
-            task.wait(0.15)
-
-            HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-            task.wait(0.15)
-
-            completed = (portalPos - HRP.Position).Magnitude <= 100
-
-        -- Standard portal
-        else
-            CommF_:InvokeServer("requestEntrance", portalPos)
-            task.wait(0.1)
-            completed = true
-        end
-    end)
-
-    State.isPortalActive = false
-
-    if not success then
-        Modules:DebugPrint("❌ Portal entrance error:", err)
-        return false
-    end
-
-    if completed then
-        Modules:DebugPrint("✅ Portal entrance successful")
-    end
-
-    return completed
 end
 
 Modules.Tween = {}
-function Modules.Tween:ToTarget(targetCFrame, btnState, speedOverride)
-    if not Modules:ValidateReferences() then return false end
-    if not targetCFrame then return false end
-    if not State.hoverBlock or not State.hoverBlock.Parent then return false end
+function Modules.Tween:ToTarget(targetCFrame, btnState)
+    if not Modules:ValidateReferences() then return end
 
-    -- Prevent concurrent player tweens
-    if State.isTweeningBoat then
-        Modules:DebugPrint("🚫 Player tween blocked: boat tween active")
-        return false
+    if Humanoid.Sit then
+        Humanoid.Sit = false
     end
 
-    if getgenv().TweenBtnFix and State.shouldTween and not btnState then 
-        return false 
+    if State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
+        State.currentTween:Cancel()
+        State.currentTween = nil
     end
 
     local dist = (targetCFrame.Position - HRP.Position).Magnitude
-
-    -- Instant snap for close distances
-    if dist <= Config.SnapDistance then
-        Modules:SafePcall(function()
-            if dist <= 15 then
-                HRP.CFrame = targetCFrame
-            end
-        end)
-        return true
+    if dist <= 300 then
+        HRP.CFrame = targetCFrame
     end
-
-    -- Cancel existing tween if button pressed
-    if btnState then
-        if State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
-            State.currentTween:Cancel()
-            State.currentTween = nil
-        end
-
-        getgenv().TweenBtnFix = true
-        State.shouldTween = true
-    end
-
-    State.isTweeningPlayer = true
-    State.tweenCount = State.tweenCount + 1
-    State.tweenStartTime = tick()
-    State.stuckCounter = 0
-
-    -- Calculate tween parameters with adaptive speed
-    local tweenSpeed = speedOverride or Modules:GetTweenSpeed()
-    local tweenDuration = dist / tweenSpeed
-
-    -- Create tween
-    local tweenInfo = TweenInfo.new(
-        tweenDuration, 
-        Enum.EasingStyle.Linear
-    )
-
-    local tween = Services.TweenService:Create(
-        State.hoverBlock, 
-        tweenInfo, 
-        {CFrame = targetCFrame}
-    )
-
-    State.currentTween = tween
-
-    -- Handle sitting characters (improved)
-    if Humanoid.Sit == true and not Modules.CheckInMyBoat() then
-        Modules:SafePcall(function()
-            State.hoverBlock.CFrame = CFrame.new(
-                State.hoverBlock.Position.X, 
-                targetCFrame.Position.Y, 
-                State.hoverBlock.Position.Z
-            )
-        end)
-    end
-
-    Modules:DebugPrint("🎯 Tween started | Dist:", math.floor(dist), "| Speed:", tweenSpeed, "| Duration:", string.format("%.1f", tweenDuration) .. "s")
-
-    tween:Play()
-
-    -- Monitor tween with enhanced checks
+    
     task.spawn(function()
-        while tween and tween.PlaybackState == Enum.PlaybackState.Playing do
-            -- Check for cancellation
-            if not State.shouldTween then
-                tween:Cancel()
-                State.isTweeningPlayer = false
-
-                if btnState then
-                    getgenv().TweenBtnFix = false
-                    State.shouldTween = false
-                end
-
-                Modules:DebugPrint("🛑 Tween cancelled by user")
+        while State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing do
+            if btnState then
+                State.btnStateTween = true
+                break
+            else
+                State.btnStateTween = false
                 break
             end
 
-            -- Validate references mid-tween
-            if not Modules:ValidateReferences() or not State.hoverBlock then
-                tween:Cancel()
-                State.isTweeningPlayer = false
-                Modules:DebugPrint("⚠️ Tween cancelled: invalid references")
+            if not Modules:ValidateReferences() then
+                State.currentTween:Cancel()
                 break
             end
             task.wait(0.1)
         end
     end)
+    
+    local tweenSpeed = Modules:GetTweenSpeed()
+    local tweenDuration = dist / tweenSpeed
+    local tweenInfo = TweenInfo.new(tweenDuration, Enum.EasingStyle.Linear)
 
-    -- Handle completion
-    if btnState then
-        tween.Completed:Connect(function(playbackState)
-            local duration = tick() - State.tweenStartTime
+    local portal = Modules.Portal:GetClosest(targetCFrame)
+    local templePos = Vector3.new(28282.5703125, 14896.8505859375, 105.1042709350586)
+    if portal == Vector3.new(28282.5703, 14896.8506, 105.1043) then
+        local mapStash = Services.ReplicatedStorage:WaitForChild("MapStash")
+        local temple = mapStash:FindFirstChild("Temple of Time")
+        if temple and not workspace:FindFirstChild("Temple of Time") then
+            temple.Parent = workspace:WaitForChild("Map")
+        end
+        while not workspace:FindFirstChild("Temple of Time") do
+            task.wait(0.1)
+        end
+        
+        if workspace:FindFirstChild("Temple of Time") then
+            if (templePos - HRP.Position).Magnitude > 10000 then
+                CommF_:InvokeServer("requestEntrance", templePos)
+            end
+        end
+    elseif portal == Vector3.new(3028.209228515625, 2280.84619140625, -7324.2880859375) then
+        if (templePos - HRP.Position).Magnitude > 10000 then
+            CommF_:InvokeServer("requestEntrance", templePos)
+        end
 
-            if playbackState == Enum.PlaybackState.Completed then
-                -- Calculate average speed for analytics
-                State.avgTweenSpeed = dist / duration
+        HRP.CFrame = CFrame.new(28609.650390625, 14896.5458984375, 105.68901062011719)
+        task.wait(0.1)
 
-                -- Final snap to target if close
-                if Modules:ValidateReferences() then
-                    local finalDist = (targetCFrame.Position - HRP.Position).Magnitude
+        if (HRP.Position - Vector3.new(28609.6504, 14896.5459, 105.6890)).Magnitude <= 15 then
+            CommF_:InvokeServer("RaceV4Progress", "TeleportBack")
+        end
+    elseif portal == Vector3.new(-2097.3447265625, 4776.24462890625, -15013.4990234375) then
+        local map = Services.Workspace:FindFirstChild("Map")
+        local cake = map and map:FindFirstChild("CakeLoaf")
+        local mirror = cake and cake:FindFirstChild("BigMirror")
 
-                    if finalDist <= Config.SnapDistance then
-                        Modules:SafePcall(function()
-                            HRP.CFrame = targetCFrame
-                        end)
+        if mirror and mirror:FindFirstChild("Other") and mirror.Other.Transparency == 0 then
+            if mirror:FindFirstChild("Main") then
+                HRP.CFrame = mirror.Main.CFrame
+                task.wait(0.1)
+            end
+        end
+    elseif portalPos == Vector3.new(10213.701171875, -1733.5025634765625, 9940.189453125) then
+        local submarinePos = Vector3.new(-16269.408203125, 23.979995727539062, 1371.662353515625)
+
+        if (submarinePos - HRP.Position).Magnitude > 1205 then
+            CommF_:InvokeServer("requestEntrance", Vector3.new(-5058.7749, 314.5155, -3155.8833))
+            task.wait(0.1)
+
+            HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
+            task.wait(0.15)
+        end
+        
+        State.currentTween = Services.TweenService:Create(HRP, tweenInfo, {CFrame = CFrame.new(submarinePos)})
+        State.currentTween:Play()
+
+        if (submarinePos - HRP.Position).Magnitude <= 20 then
+            local rep = Services.ReplicatedStorage
+            local modules = rep:FindFirstChild("Modules")
+            if modules then
+                local net = modules:FindFirstChild("Net")
+                if net then
+                    local rf = net:FindFirstChild("RF/SubmarineWorkerSpeak")
+                    if rf then
+                        rf:InvokeServer("TravelToSubmergedIsland")
+                        State.currentTween:Cancel()
+                        task.wait(0.2)
                     end
                 end
-
-                Modules:DebugPrint("✅ Tween completed | Time:", string.format("%.2f", duration) .. "s")
-            elseif playbackState == Enum.PlaybackState.Cancelled then
-                Modules:DebugPrint("⚠️ Tween was cancelled")
             end
-
-            getgenv().TweenBtnFix = false
-            State.shouldTween = false
-            State.isTweeningPlayer = false
-        end)
-    else
-        tween.Completed:Connect(function()
-            State.isTweeningPlayer = false
-        end)
-    end
-
-    return true
-end
-
-function Modules.Tween:WithPortal(targetCFrame, btnState, speedOverride)
-    if not targetCFrame or not Modules:ValidateReferences() then  return false end
-
-    local portalPos = Modules.Portal:GetClosest(targetCFrame)
-
-    if portalPos then
-        Modules:DebugPrint("🌀 Attempting portal shortcut...")
-        
-        if Modules.Portal:RequestEntrance(portalPos, btnState) then
-            task.wait(0.1)
-            return self:ToTarget(targetCFrame, btnState, speedOverride)
-        else
-            return self:ToTarget(targetCFrame, btnState, speedOverride)
         end
+    elseif portal == Vector3.new(-16799.091796875, 84.32279968261719, 291.0728454589844) then
+        CommF_:InvokeServer("requestEntrance", Vector3.new(-5058.7749, 314.5155, -3155.8833))
+        task.wait(0.1)
+
+        HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
+        task.wait(0.15)
     else
-        return self:ToTarget(targetCFrame, btnState, speedOverride)
+        CommF_:InvokeServer("requestEntrance", portal)
     end
+
+    State.currentTween = Services.TweenService:Create(HRP, tweenInfo, {CFrame = targetCFrame})
+    State.currentTween:Play()
+
+    local tweenPlrFunc = {}
+    function tweenPlrFunc:Stop()
+        State.currentTween:Cancel()
+    end
+
+    State.currentTween.Completed:Wait()
+    HRP.CFrame = targetCFrame
+
+    return tweenPlrFunc
 end
 
 function Modules.Tween:Boat(targetCFrame)
-    if not Modules:ValidateReferences() then return false end
-    if not targetCFrame then return false end
-
-    -- Prevent concurrent tweens
-    if State.isTweeningPlayer then
-        Modules:DebugPrint("🚫 Boat tween blocked: player tween active")
-        return false
-    end
-
     local myShip = Modules.CheckMyBoat()
-    if not myShip then 
-        Modules:DebugPrint("⚠️ No boat found")
-        return false
-    end
+    if not myShip then return end
 
     local vehicleSeat = myShip:FindFirstChild("VehicleSeat")
-    if not vehicleSeat then 
-        Modules:DebugPrint("⚠️ Boat has no VehicleSeat")
-        return false
-    end
-
-    State.isTweeningBoat = true
+    if not vehicleSeat then return end
 
     local dist = (targetCFrame.Position - vehicleSeat.Position).Magnitude
-
-    -- Smooth docking for close distances
-    if dist <= Config.BoatSnapDistance then
-        Modules:SafePcall(function()
-            vehicleSeat.CFrame = targetCFrame
-        end)
-
-        State.isTweeningBoat = false
-        Modules:DebugPrint("✅ Boat docked")
-        return true
-    end
-
     local boatSpeed = Modules:GetBoatSpeed()
     local duration = dist / boatSpeed
-
-    -- Smoother easing for boats
-    local tweenInfo = TweenInfo.new(
-        duration, 
-        Enum.EasingStyle.Linear
-    )
+    local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
 
     local tween = Services.TweenService:Create(vehicleSeat, tweenInfo, {CFrame = targetCFrame})
-    State.boatTween = tween
-
-    Modules:DebugPrint("⛵ Boat tween started | Distance:", math.floor(dist))
-
     tween:Play()
-
-    -- Monitor for stop signal or completion
-    task.spawn(function()
-        while tween.PlaybackState == Enum.PlaybackState.Playing do
-            if getgenv().StopBoatTween then
-                tween:Cancel()
-                State.isTweeningBoat = false
-                Modules:DebugPrint("🛑 Boat tween stopped")
-                break
-            end
-            task.wait(0.1)
-        end
-    end)
-
-    tween.Completed:Connect(function(playbackState)
-        State.isTweeningBoat = false
-        if playbackState == Enum.PlaybackState.Completed then
-            Modules:DebugPrint("✅ Boat tween completed")
-        end
-    end)
-
-    return true
+    
+    local boatTweenFunc = {}
+    function boatTweenFunc:Stop()
+        tween:Cancel()
+    end
+    return boatTweenFunc
 end
 
-function Modules.Tween:StopAll(mode)
-    mode = mode or "all"
+function Modules.Tween:StopAll(target)
+    if State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
+        State.currentTween:Cancel()
+        State.currentTween = nil
+    end
 
-    Modules:DebugPrint("🛑 Stopping tweens | Mode:", mode)
-
-    if mode == "player" or mode == "all" then
-        getgenv().TweenBtnFix = false
-        State.shouldTween = false
-        State.isTweeningPlayer = false
-        State.stuckCounter = 0
-
-        if State.currentTween then
-            Modules:SafePcall(function()
-                if State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
-                    State.currentTween:Cancel()
-                end
-                State.currentTween = nil
-            end)
-        end
-
+    if not target then
         if Modules:ValidateReferences() then
+            HRP.CFrame = HRP.CFrame + Vector3.new(0, 0.01, 0)
             if HRP:FindFirstChild("VinreachHoverClip") then
-                Modules:SafePcall(function()
-                    HRP:FindFirstChild("VinreachHoverClip"):Destroy()
-                end)
+                HRP:FindFirstChild("VinreachHoverClip"):Destroy()
             end
         end
-
-        if State.hoverBlock and State.hoverBlock.Parent and HRP then
-            Modules:SafePcall(function()
-                State.hoverBlock.CFrame = HRP.CFrame
-            end)
-        end
     end
-
-    if mode == "boat" or mode == "all" then
-        getgenv().StopBoatTween = true
-        State.isTweeningBoat = false
-
-        if State.boatTween then
-            Modules:SafePcall(function()
-                if State.boatTween.PlaybackState == Enum.PlaybackState.Playing then
-                    State.boatTween:Cancel()
-                end
-                State.boatTween = nil
-            end)
-        end
-    end
-
-    -- Reset flags after brief delay
-    task.delay(0.15, function()
-        if mode == "all" or mode == "boat" then
-            getgenv().StopBoatTween = false
-        end
-    end)
-
-    return true
 end
 
 local function InitializeReferences()
@@ -907,119 +339,49 @@ local function InitializeReferences()
         Humanoid = Character:WaitForChild("Humanoid", 10)
     end)
 
-    if not success or not HRP or not Humanoid then
-        warn("❌ Failed to initialize character references!")
-        return false
-    end
-
-    -- Validate health
-    if Humanoid.Health <= 0 then
-        warn("⚠️ Character is dead, waiting for respawn...")
-        return false
-    end
-
+    if not success or not HRP or not Humanoid then return false end
+    if Humanoid.Health <= 0 then return false end
     return true
 end
 
 function Modules:Initialize()
-    if State.isInitialized then
-        Modules:DebugPrint("⚠️ Already initialized, reinitializing...")
-    end
+    if State.isInitialized then return end
+    if not InitializeReferences() then return end
 
-    if not InitializeReferences() then
-        warn("❌ Critical initialization failure!")
-        return false
-    end
-
-    Modules:DebugPrint("✅ Character references initialized")
-    Modules:DebugPrint("📍 Player:", Player.Name)
-    Modules:DebugPrint("🌊 Sea:", Sea3 and "3" or Sea2 and "2" or Sea1 and "1" or "Unknown")
-
-    -- Initialize hover block system
-    local hoverBlock = Modules.HoverBlock:Initialize()
-    if not hoverBlock then
-        warn("❌ Failed to initialize hover block!")
-        return false
-    end
-
-    Modules:DebugPrint("✅ Hover block system initialized")
-
-    -- Reset all counters
     State.isInitialized = true
-    State.errorCount = 0
-    State.successCount = 0
-    State.tweenCount = 0
-    State.portalUseCount = 0
-    State.stuckCounter = 0
-
     _G.ModulesInitialized = true
     _G.ModulesVersion = Modules.Version
-
-    Modules:DebugPrint("🚀 Tween Library v" .. Modules.Version .. " fully initialized!")
-    return true
 end
 
 Player.CharacterAdded:Connect(function(newChar)
-    Modules:DebugPrint("🔄 Character respawned, reinitializing...")
-
-    -- Reset all states
     State.isInitialized = false
-    State.isTweeningPlayer = false
-    State.isTweeningBoat = false
-    State.shouldTween = false
-    State.stuckCounter = 0
-    State.lastPosition = nil
-    getgenv().TweenBtnFix = false
-
-    -- Cancel any active tweens
-    Modules.Tween:StopAll("all")
-
     Character = newChar
     task.wait(0.5)
 
     local success = Modules:Initialize()
-    if success then
-        Modules:DebugPrint("✅ Reinitialization successful")
-    else
-        warn("⚠️ Reinitialization failed, retrying in 2s...")
-        task.wait(2)
+    if not success then
         Modules:Initialize()
     end
 end)
 
 function Modules:UpdateConfig(newConfig)
-    if type(newConfig) ~= "table" then
-        warn("⚠️ Invalid config provided")
-        return false
-    end
+    if type(newConfig) ~= "table" then return end
 
-    local updated = 0
     local tweenLocal = {defaultTweenSpeed=true, fastTweenSpeed=true, slowTweenSpeed=true, defaultBoatTweenSpeed=true}
     for key, value in pairs(newConfig) do
         if Config[key] ~= nil then
             if type(Config[key]) == "table" and type(value) == "table" then
                 for k,v in pairs(value) do
                     Config[key][k] = v
-                    updated = updated + 1
                 end
             else
                 Config[key] = value
-                updated = updated + 1
             end
-            Modules:DebugPrint("⚙️ Config updated:", key, "=", tostring(value))
         elseif tweenLocal[key] then
-            -- If the key belongs to tweenLocal but Config.Tween does not exist, initialize it.
             Config.Tween = Config.Tween or {}
             Config.Tween[key] = value
-            updated = updated + 1
-            Modules:DebugPrint("⚙️ Tween config updated:", key, "=", tostring(value))
-        else
-            Modules:DebugPrint("⚠️ Unknown config key:", key)
         end
     end
-
-    Modules:DebugPrint("✅ Updated", updated, "config values")
-    return true
 end
 
 function Modules:GetConfig(key)
@@ -1039,63 +401,28 @@ function Modules:GetConfig(key)
     end
 end
 
-function Modules:TweenToTarget(input, btn, speedOverride)
-    if not State.isInitialized then
-        warn("⚠️ Module not initialized!")
-        return false
-    end
-    return Modules.Tween:WithPortal(input, btn, speedOverride) 
+function Modules:ToPos(input, btn)
+    if not State.isInitialized then return end
+    Modules.Tween:ToTarget(input, btn)
 end
 
-function Modules:TweenByBoatToTarget(input)
-    if not State.isInitialized then
-        warn("⚠️ Module not initialized!")
-        return false
-    end
-    return Modules.Tween:Boat(input) 
+function Modules:BoatTween(input)
+    if not State.isInitialized then return end
+    Modules.Tween:Boat(input) 
 end
 
-function Modules:StopTween(mode)
-    return Modules.Tween:StopAll(mode)
+function Modules:StopTween(target)
+    Modules.Tween:StopAll(target)
 end
 
-function Modules:GetBtnTweenStatus()
-    return getgenv().TweenBtnFix == true
-end
-
-function Modules:SetShouldTween(state)
-    if type(state) ~= "boolean" then
-        state = false
-    end
-
-    State.shouldTween = state
-    Modules:DebugPrint("🎛️ shouldTween set to:", state)
-    return state
-end
-
-function Modules:GetTweenState()
-    return {
-        player = State.isTweeningPlayer,
-        boat = State.isTweeningBoat,
-        should = State.shouldTween,
-        portal = State.isPortalActive
-    }
-end
-
-function Modules:EnableDebug(enable)
-    Config.DebugInfo = enable == true
-    Modules:DebugPrint("🐛 Debug mode:", Config.DebugInfo and "ENABLED" or "DISABLED")
+function Modules:GetToposButtonState()
+    return State.btnStateTween or false
 end
 
 local initSuccess = Modules:Initialize()
 if not initSuccess then
-    warn("⚠️ Initial startup failed, retrying in 3 seconds...")
-    task.wait(3)
-    initSuccess = Modules:Initialize()
-
-    if not initSuccess then
-        warn("❌ Critical failure! Module may not work correctly.")
-    end
+    Modules:Initialize()
 end
+print("Modules Loaded")
 
 return Modules
