@@ -1,6 +1,6 @@
 local Modules = {}
 Modules.__index = Modules
-Modules.Version = "1.6"
+Modules.Version = "1.6.1"
 
 -- Service caching
 local Services = {
@@ -37,7 +37,8 @@ end
 local State = {
     currentTween = nil,
     isInitialized = false,
-    btnStateTween = false
+    btnStateTween = false,
+    isTweening = false
 }
 
 -- Remote setup with proper error handling
@@ -50,7 +51,8 @@ end
 
 -- Utility Functions
 function Modules:SafePcall(func, ...)
-    return pcall(func, ...)
+    local success, result = pcall(func, ...)
+    return success, result
 end
 
 function Modules:IsAlive(char)
@@ -157,25 +159,27 @@ function Modules.Portal:GetClosest(targetCFrame)
 
     if not seaTable then return nil end
 
-    local closestPortal = nil
-    local minDistance = math.huge
     local targetPos = targetCFrame.Position
     local hrpPos = HRP.Position
+    local directDist = (targetPos - hrpPos).Magnitude
+
+    local closestPortal = nil
+    local bestSaving = 0
 
     for _, portalPos in pairs(seaTable) do
-        local distToPortal = (portalPos - targetPos).Magnitude
-        if distToPortal < minDistance then
-            minDistance = distToPortal
+        local distToPortal = (portalPos - hrpPos).Magnitude
+        local distFromPortal = (targetPos - portalPos).Magnitude
+        local totalDist = distToPortal + distFromPortal
+        local saving = directDist - totalDist
+
+        -- Only use portal if it saves at least 1000 studs
+        if saving > 1000 and saving > bestSaving then
+            bestSaving = saving
             closestPortal = portalPos
         end
     end
 
-    -- Only return portal if it's closer than direct path
-    if closestPortal and minDistance < (targetPos - hrpPos).Magnitude then
-        return closestPortal
-    end
-
-    return nil
+    return closestPortal
 end
 
 -- Tween System
@@ -183,16 +187,17 @@ Modules.Tween = {}
 
 function Modules.Tween:ToTarget(targetCFrame, btnState)
     if not Modules:ValidateReferences() then return end
+    if State.isTweening then
+        self:StopAll(false)
+        task.wait(0.1)
+    end
+
+    State.isTweening = true
 
     -- Unsit if sitting
     if Humanoid.Sit then
         Humanoid.Sit = false
-    end
-
-    -- Cancel existing tween
-    if State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
-        State.currentTween:Cancel()
-        State.currentTween = nil
+        task.wait(0.1)
     end
 
     local dist = (targetCFrame.Position - HRP.Position).Magnitude
@@ -200,20 +205,25 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
     -- Instant teleport for short distances
     if dist <= 300 then
         HRP.CFrame = targetCFrame
+        State.isTweening = false
         return
     end
 
     -- Monitor button state
-    task.spawn(function()
-        while State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing do
+    local monitorTask = task.spawn(function()
+        while State.isTweening do
             State.btnStateTween = btnState or false
             
             if btnState then
+                State.isTweening = false
                 break
             end
 
             if not Modules:ValidateReferences() then
-                State.currentTween:Cancel()
+                State.isTweening = false
+                if State.currentTween then
+                    State.currentTween:Cancel()
+                end
                 break
             end
             
@@ -240,15 +250,24 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
     -- Return control object
     local tweenPlrFunc = {}
     function tweenPlrFunc:Stop()
+        State.isTweening = false
         if State.currentTween then
             State.currentTween:Cancel()
+            State.currentTween = nil
+        end
+        if monitorTask then
+            task.cancel(monitorTask)
         end
     end
 
     if State.currentTween then
         State.currentTween.Completed:Wait()
-        HRP.CFrame = targetCFrame
+        if Modules:ValidateReferences() then
+            HRP.CFrame = targetCFrame
+        end
     end
+
+    State.isTweening = false
 
     return tweenPlrFunc
 end
@@ -257,7 +276,7 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
     local templePos = Vector3.new(28282.5703125, 14896.8505859375, 105.1042709350586)
     
     -- Temple of Time
-    if portal == Vector3.new(28282.5703, 14896.8506, 105.1043) then
+    if (portal - Vector3.new(28282.5703, 14896.8506, 105.1043)).Magnitude < 10 then
         local mapStash = Services.ReplicatedStorage:WaitForChild("MapStash", 5)
         local temple = mapStash and mapStash:FindFirstChild("Temple of Time")
         
@@ -271,25 +290,28 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
             timeout = timeout + 1
         end
         
-        if Services.Workspace:FindFirstChild("Temple of Time") and (templePos - HRP.Position).Magnitude > 10000 then
+        if Services.Workspace:FindFirstChild("Temple of Time") and (templePos - HRP.Position).Magnitude > 1000 then
             CommF_:InvokeServer("requestEntrance", templePos)
+            task.wait(0.5)
         end
     
     -- Great Tree
-    elseif portal == Vector3.new(3028.209228515625, 2280.84619140625, -7324.2880859375) then
-        if (templePos - HRP.Position).Magnitude > 10000 then
+    elseif (portal - Vector3.new(3028.209228515625, 2280.84619140625, -7324.2880859375)).Magnitude < 10 then
+        if (templePos - HRP.Position).Magnitude > 1000 then
             CommF_:InvokeServer("requestEntrance", templePos)
+            task.wait(0.5)
         end
 
         HRP.CFrame = CFrame.new(28609.650390625, 14896.5458984375, 105.68901062011719)
-        task.wait(0.1)
+        task.wait(0.3)
 
-        if (HRP.Position - Vector3.new(28609.6504, 14896.5459, 105.6890)).Magnitude <= 15 then
+        if Modules:ValidateReferences() and (HRP.Position - Vector3.new(28609.6504, 14896.5459, 105.6890)).Magnitude <= 20 then
             CommF_:InvokeServer("RaceV4Progress", "TeleportBack")
+            task.wait(0.5)
         end
     
     -- Dimension Shift
-    elseif portal == Vector3.new(-2097.3447265625, 4776.24462890625, -15013.4990234375) then
+    elseif (portal - Vector3.new(-2097.3447265625, 4776.24462890625, -15013.4990234375)).Magnitude < 10 then
         local map = Services.Workspace:FindFirstChild("Map")
         local cake = map and map:FindFirstChild("CakeLoaf")
         local mirror = cake and cake:FindFirstChild("BigMirror")
@@ -298,27 +320,38 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
             local main = mirror:FindFirstChild("Main")
             if main then
                 HRP.CFrame = main.CFrame
-                task.wait(0.1)
+                task.wait(0.3)
             end
         end
     
     -- Submerged Island
-    elseif portal == Vector3.new(10213.701171875, -1733.5025634765625, 9940.189453125) then
+    elseif (portal - Vector3.new(10213.701171875, -1733.5025634765625, 9940.189453125)).Magnitude < 10 then
+        local castlePos = Vector3.new(-5058.7749, 314.5155, -3155.8833)
         local submarinePos = Vector3.new(-16269.408203125, 23.979995727539062, 1371.662353515625)
 
-        if (submarinePos - HRP.Position).Magnitude > 1205 then
-            CommF_:InvokeServer("requestEntrance", Vector3.new(-5058.7749, 314.5155, -3155.8833))
-            task.wait(0.1)
+        -- First go to castle if far away
+        if (castlePos - HRP.Position).Magnitude > 2000 then
+            CommF_:InvokeServer("requestEntrance", castlePos)
+            task.wait(0.5)
 
-            HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-            task.wait(0.15)
+            if Modules:ValidateReferences() then
+                HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
+                task.wait(0.3)
+            end
         end
         
         -- Tween to submarine
-        State.currentTween = Services.TweenService:Create(HRP, tweenInfo, {CFrame = CFrame.new(submarinePos)})
+        local subDist = (submarinePos - HRP.Position).Magnitude
+        local subDuration = subDist / Modules:GetTweenSpeed()
+        local subTweenInfo = TweenInfo.new(subDuration, Enum.EasingStyle.Linear)
+        
+        State.currentTween = Services.TweenService:Create(HRP, subTweenInfo, {CFrame = CFrame.new(submarinePos)})
         State.currentTween:Play()
+        State.currentTween.Completed:Wait()
 
-        if (submarinePos - HRP.Position).Magnitude <= 20 then
+        task.wait(0.2)
+
+        if Modules:ValidateReferences() and (submarinePos - HRP.Position).Magnitude <= 30 then
             local rep = Services.ReplicatedStorage
             local modules = rep:FindFirstChild("Modules")
             local net = modules and modules:FindFirstChild("Net")
@@ -326,31 +359,40 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
             
             if rf then
                 rf:InvokeServer("TravelToSubmergedIsland")
-                if State.currentTween then
-                    State.currentTween:Cancel()
-                end
-                task.wait(0.2)
+                task.wait(1)
             end
         end
     
     -- Tiki Outpost
-    elseif portal == Vector3.new(-16799.091796875, 84.32279968261719, 291.0728454589844) then
-        if (Vector3.new(-16799.091796875, 84.32279968261719, 291.0728454589844) - HRP.Position).Magnitude > 2000 then
-            CommF_:InvokeServer("requestEntrance", Vector3.new(-5058.7749, 314.5155, -3155.8833))
-            task.wait(0.1)
+    elseif (portal - Vector3.new(-16799.091796875, 84.32279968261719, 291.0728454589844)).Magnitude < 10 then
+        local castlePos = Vector3.new(-5058.7749, 314.5155, -3155.8833)
+        
+        if (castlePos - HRP.Position).Magnitude > 2000 then
+            CommF_:InvokeServer("requestEntrance", castlePos)
+            task.wait(0.5)
 
-            HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-            task.wait(0.15)
+            if Modules:ValidateReferences() then
+                HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
+                task.wait(0.3)
+            end
         end
+
+        task.wait(0.2)
     
     -- Generic portal
     else
         CommF_:InvokeServer("requestEntrance", portal)
-        task.wait(0.1)
+        task.wait(0.5)
     end
 
     -- Final tween to target
-    State.currentTween = Services.TweenService:Create(HRP, tweenInfo, {CFrame = targetCFrame})
+    if not Modules:ValidateReferences() then return end
+    
+    local finalDist = (targetCFrame.Position - HRP.Position).Magnitude
+    local finalDuration = finalDist / Modules:GetTweenSpeed()
+    local finalTweenInfo = TweenInfo.new(finalDuration, Enum.EasingStyle.Linear)
+    
+    State.currentTween = Services.TweenService:Create(HRP, finalTweenInfo, {CFrame = targetCFrame})
     State.currentTween:Play()
 end
 
@@ -371,20 +413,25 @@ function Modules.Tween:Boat(targetCFrame)
     
     local boatTweenFunc = {}
     function boatTweenFunc:Stop()
-        tween:Cancel()
+        if tween then
+            tween:Cancel()
+        end
     end
     
     return boatTweenFunc
 end
 
-function Modules.Tween:StopAll(target)
+function Modules.Tween:StopAll(stopMovement)
+    State.isTweening = false
+    
     if State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
         State.currentTween:Cancel()
         State.currentTween = nil
     end
 
-    if not target and Modules:ValidateReferences() then
-        HRP.CFrame = HRP.CFrame * CFrame.new(0, 0.01, 0)
+    if stopMovement ~= false and Modules:ValidateReferences() then
+        HRP.CFrame = HRP.CFrame
+        HRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
         
         local hoverClip = HRP:FindFirstChild("VinreachHoverClip")
         if hoverClip then
@@ -418,6 +465,7 @@ end
 -- Character respawn handling
 Player.CharacterAdded:Connect(function(newChar)
     State.isInitialized = false
+    State.isTweening = false
     Character = newChar
     task.wait(0.5)
 
@@ -431,40 +479,21 @@ end)
 function Modules:UpdateConfig(newConfig)
     if type(newConfig) ~= "table" then return end
 
-    local tweenKeys = {
-        defaultTweenSpeed = true,
-        fastTweenSpeed = true,
-        slowTweenSpeed = true,
-        defaultBoatTweenSpeed = true
-    }
-
     for key, value in pairs(newConfig) do
-        if Config[key] ~= nil then
-            if type(Config[key]) == "table" and type(value) == "table" then
-                for k, v in pairs(value) do
-                    Config[key][k] = v
-                end
-            else
-                Config[key] = value
+        if key == "Tween" and type(value) == "table" then
+            for k, v in pairs(value) do
+                Config.Tween[k] = v
             end
-        elseif tweenKeys[key] then
-            Config.Tween = Config.Tween or {}
-            Config.Tween[key] = value
+        elseif Config[key] ~= nil then
+            Config[key] = value
         end
     end
 end
 
 function Modules:GetConfig(key)
-    local tweenKeys = {
-        defaultTweenSpeed = true,
-        fastTweenSpeed = true,
-        slowTweenSpeed = true,
-        defaultBoatTweenSpeed = true
-    }
-
     if key then
-        if tweenKeys[key] then
-            return Config.Tween and Config.Tween[key]
+        if key == "Tween" or Config.Tween[key] then
+            return Config.Tween[key]
         else
             return Config[key]
         end
@@ -496,8 +525,8 @@ function Modules:BoatTween(input)
     return Modules.Tween:Boat(input)
 end
 
-function Modules:StopTween(target)
-    Modules.Tween:StopAll(target)
+function Modules:StopTween(stopMovement)
+    Modules.Tween:StopAll(stopMovement)
 end
 
 function Modules:GetToposButtonState()
