@@ -36,7 +36,7 @@ local Config = {
     -- Gun Settings
     AutoShootGuns = true,
     GunRange = 120,
-    SpecialShoots = {["Skull Guitar"] = "TAP", ["Bazooka"] = "Position", ["Cannon"] = "Position", ["Dragonstorm"] = "Position"},
+    SpecialShoots = {["Skull Guitar"] = "TAP", ["Bazooka"] = "Position", ["Cannon"] = "Position", ["Dragonstorm"] = "Overheat"},
     
     DebugMode = false
 }
@@ -377,7 +377,7 @@ local function ExecuteGunAttack(tool, targetPos)
     
     -- Fire gun event
     local ShootType = Config.SpecialShoots[tool.Name] or "Normal"
-    if ShootType == "Position" or (ShootType == "TAP" and tool:FindFirstChild("RemoteEvent")) then
+    if ShootType == "Position" or ShootType == "Overheat" or (ShootType == "TAP" and tool:FindFirstChild("RemoteEvent")) then
         pcall(function()
 	        tool:SetAttribute("LocalTotalShots", (tool:GetAttribute("LocalTotalShots") or 0) + 1)
         end)
@@ -394,6 +394,10 @@ local function ExecuteGunAttack(tool, targetPos)
 	    if ShootType == "TAP" then
 	        pcall(function()
 	            tool.RemoteEvent:FireServer("TAP", targetPos)
+	        end)
+	    elseif ShootType == "Overheat" then
+	        pcall(function()
+		        Remotes.ShootGunEvent:FireServer(targetPos, {})
 	        end)
 		else
 		    pcall(function()
