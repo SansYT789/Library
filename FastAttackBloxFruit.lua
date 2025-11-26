@@ -11,7 +11,7 @@ local Config = {
     AttackCooldown = 0,
     
     -- Combat Settings
-    UseAdvancedHit = true, -- Use advanced hit function if available
+    UseAdvancedHit = true,
     ComboMode = true,
     MaxCombo = 4,
     ComboResetTime = 0.3,
@@ -22,10 +22,10 @@ local Config = {
     IgnoreForceField = true,
     RespectTeams = true,
     
-    -- Ghost Detection (Anti-Stuck)
+    -- Ghost Detection (Anti-Stuck) - ADJUSTED
     GhostDetection = true,
-    GhostTimeout = 10,
-    GhostRetryAttempts = 5,
+    GhostTimeout = 15, -- Increased from 10
+    GhostRetryAttempts = 8, -- Increased from 5
     
     -- Hitbox Optimization
     HitboxLimbs = {
@@ -37,6 +37,12 @@ local Config = {
     AutoShootGuns = true,
     GunRange = 120,
     SpecialShoots = {["Skull Guitar"] = "TAP", ["Bazooka"] = "Position", ["Cannon"] = "Position", ["Dragonstorm"] = "Overheat"},
+    
+    -- Reliability Settings (NEW)
+    AutoRestart = true, -- Auto-restart if stopped
+    RestartDelay = 2, -- Seconds before auto-restart
+    SkipStunCheck = false, -- Skip stun checks (risky but more reliable)
+    SkipBusyCheck = false, -- Skip busy checks (risky but more reliable)
     
     DebugMode = false
 }
@@ -53,6 +59,18 @@ local Character, HRP, Humanoid
 local Remotes = {}
 local AdvancedFunctions = {}
 
+-- Health monitor to detect death/respawn
+local HealthMonitor = {
+    LastHealth = 100,
+    IsDead = false
+}
+
+local function DebugLog(...)
+    if Config.DebugMode then
+        print("[FastAttack Debug]", ...)
+    end
+end
+
 local function InitializeRemotes()
     local success = pcall(function()
         local Modules = ReplicatedStorage:WaitForChild("Modules", 10)
@@ -63,12 +81,10 @@ local function InitializeRemotes()
         Remotes.ShootGunEvent = Net:FindFirstChild("RE/ShootGunEvent")
         Remotes.Modules = Modules
         
-        -- Try to get combat flags
         pcall(function()
             AdvancedFunctions.CombatFlags = require(Modules.Flags).COMBAT_REMOTE_THREAD
         end)
         
-        -- Try to get advanced hit function
         pcall(function()
             local LocalScript = Player:WaitForChild("PlayerScripts"):FindFirstChildOfClass("LocalScript")
             if LocalScript and getsenv then
@@ -76,7 +92,6 @@ local function InitializeRemotes()
             end
         end)
         
-        -- Try to get gun validator
         pcall(function()
             Remotes.GunValidator = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Validator2")
             local CombatController = require(ReplicatedStorage.Controllers.CombatController)
@@ -84,6 +99,7 @@ local function InitializeRemotes()
         end)
     end)
     
+    DebugLog("Remotes initialized:", success)
     return success
 end
 
@@ -91,6 +107,14 @@ local function InitializeCharacter()
     Character = Player.Character or Player.CharacterAdded:Wait()
     HRP = Character:WaitForChild("HumanoidRootPart", 5)
     Humanoid = Character:WaitForChild("Humanoid", 5)
+    
+    -- Reset health monitor
+    if Humanoid then
+        HealthMonitor.LastHealth = Humanoid.Health
+        HealthMonitor.IsDead = false
+    end
+    
+    DebugLog("Character initialized:", HRP ~= nil, Humanoid ~= nil)
     return HRP and Humanoid
 end
 
@@ -113,16 +137,19 @@ local function IsGhostEnemy(enemy)
     local currentHealth = enemy:FindFirstChild("Humanoid") and enemy.Humanoid.Health or 0
     local timeSinceFirst = tick() - track.firstSeen
     
-    -- Check if health is changing (not a ghost)
-    if currentHealth < track.lastHealth then
+    -- If health decreased, reset tracking (not a ghost)
+    if currentHealth < track.lastHealth - 0.1 then -- Small threshold for floating point
         track.lastHealth = currentHealth
         track.firstSeen = tick()
         track.attempts = 0
         return false
     end
     
-    -- Mark as ghost if stuck too long
+    track.lastHealth = currentHealth
+    
+    -- More lenient ghost detection
     if timeSinceFirst > Config.GhostTimeout and track.attempts > Config.GhostRetryAttempts then
+        DebugLog("Ghost detected:", enemy.Name)
         return true
     end
     
@@ -143,29 +170,50 @@ local function CleanGhostTracker()
 end
 
 local function IsEntityAlive(entity)
-    if not entity then return false end
+    if not entity or not entity.Parent then return false end
     local humanoid = entity:FindFirstChild("Humanoid")
     return humanoid and humanoid.Health > 0
 end
 
 local function CanAttack()
-    if not Character or not Humanoid or not HRP then return false end
+    if not Character or not Humanoid or not HRP then 
+        DebugLog("CanAttack: Missing character components")
+        return false 
+    end
     
-    local tool = Character:FindFirstChildOfClass("Tool")
-    if not tool then return false end
-    
-    -- Check stun/busy status
-    local stun = Character:FindFirstChild("Stun")
-    local busy = Character:FindFirstChild("Busy")
-    
-    if (stun and stun.Value > 0) or (busy and busy.Value) then
+    if not Character.Parent then
+        DebugLog("CanAttack: Character not in workspace")
         return false
     end
     
-    -- Check if sitting (some weapons allow attacking while sitting)
+    local tool = Character:FindFirstChildOfClass("Tool")
+    if not tool then 
+        DebugLog("CanAttack: No tool equipped")
+        return false 
+    end
+    
+    -- Skip stun/busy checks if configured (more aggressive attacking)
+    if not Config.SkipStunCheck then
+        local stun = Character:FindFirstChild("Stun")
+        if stun and stun.Value > 0 then
+            DebugLog("CanAttack: Stunned")
+            return false
+        end
+    end
+    
+    if not Config.SkipBusyCheck then
+        local busy = Character:FindFirstChild("Busy")
+        if busy and busy.Value then
+            DebugLog("CanAttack: Busy")
+            return false
+        end
+    end
+    
+    -- More lenient sitting check
     if Humanoid.Sit then
         local tooltip = tool.ToolTip
         if tooltip ~= "Sword" and tooltip ~= "Melee" and tooltip ~= "Blox Fruit" and tooltip ~= "Gun" then
+            DebugLog("CanAttack: Invalid tool while sitting")
             return false
         end
     end
@@ -194,16 +242,13 @@ local function IsInSafeZone()
     return false
 end
 
--- ==================== TARGET ACQUISITION ====================
 local function GetOptimalHitbox(enemy)
-    -- Try to get a random limb for better hit registration
     for i = 1, 3 do
         local limbName = Config.HitboxLimbs[math.random(#Config.HitboxLimbs)]
         local limb = enemy:FindFirstChild(limbName)
         if limb then return limb end
     end
     
-    -- Fallback to primary parts
     return enemy:FindFirstChild("HumanoidRootPart") or enemy.PrimaryPart
 end
 
@@ -214,14 +259,12 @@ local function GetAllTargets()
     local hrpPos = HRP.Position
     local maxDist = Config.AttackDistance
     
-    -- Scan Enemies (Mobs)
     if Config.AttackMobs then
         local enemies = Workspace:FindFirstChild("Enemies")
         if enemies then
             for _, enemy in ipairs(enemies:GetChildren()) do
                 if #targets >= Config.MaxTargets then break end
                 
-                -- Skip boats and special entities
                 if Config.IgnoreBoats then
                     if enemy:GetAttribute("IsBoat") or 
                        enemy.Name == "FishBoat" or 
@@ -239,7 +282,6 @@ local function GetAllTargets()
                 
                 if not IsEntityAlive(enemy) then continue end
                 
-                -- Ghost detection
                 if IsGhostEnemy(enemy) then continue end
                 
                 local hitbox = GetOptimalHitbox(enemy)
@@ -250,7 +292,6 @@ local function GetAllTargets()
         end
     end
     
-    -- Scan Players
     if Config.AttackPlayers and not IsInSafeZone() then
         local chars = Workspace:FindFirstChild("Characters")
         if chars then
@@ -258,7 +299,6 @@ local function GetAllTargets()
                 if #targets >= Config.MaxTargets then break end
                 if enemy == Character then continue end
                 
-                -- Team check
                 if Config.RespectTeams then
                     local enemyPlayer = Players:GetPlayerFromCharacter(enemy)
                     if enemyPlayer and Player.Team and enemyPlayer.Team == Player.Team then
@@ -280,7 +320,6 @@ local function GetAllTargets()
         end
     end
     
-    -- Sort by distance if priority enabled
     if Config.PrioritizeClosest and #targets > 1 then
         table.sort(targets, function(a, b) return a[3] < b[3] end)
     end
@@ -316,12 +355,10 @@ local function ExecuteMeleeAttack(targets, combo)
     
     local mainTarget = targets[1][2]
     
-    -- Fire attack registration
     pcall(function()
         Remotes.RegisterAttack:FireServer(combo or 0)
     end)
     
-    -- Fire hit registration with advanced function if available
     pcall(function()
         if Config.UseAdvancedHit and AdvancedFunctions.CombatFlags and AdvancedFunctions.HitFunction then
             AdvancedFunctions.HitFunction(mainTarget, targets)
@@ -375,36 +412,35 @@ local function ExecuteGunAttack(tool, targetPos)
     local cooldown = tool:FindFirstChild("Cooldown") and tool.Cooldown.Value or 0.3
     if (now - ShootDebounce) < cooldown then return end
     
-    -- Fire gun event
     local ShootType = Config.SpecialShoots[tool.Name] or "Normal"
     if ShootType == "Position" or ShootType == "Overheat" or (ShootType == "TAP" and tool:FindFirstChild("RemoteEvent")) then
         pcall(function()
-	        tool:SetAttribute("LocalTotalShots", (tool:GetAttribute("LocalTotalShots") or 0) + 1)
+            tool:SetAttribute("LocalTotalShots", (tool:GetAttribute("LocalTotalShots") or 0) + 1)
         end)
         
         pcall(function()
-	        if Remotes.GunValidator and AdvancedFunctions.ShootFunction then
-	            local v1, v2 = GetGunValidator()
-	            if v1 then
-	                Remotes.GunValidator:FireServer(v1, v2)
-	            end
-	        end
+            if Remotes.GunValidator and AdvancedFunctions.ShootFunction then
+                local v1, v2 = GetGunValidator()
+                if v1 then
+                    Remotes.GunValidator:FireServer(v1, v2)
+                end
+            end
         end)
-	    
-	    if ShootType == "TAP" then
-	        pcall(function()
-	            tool.RemoteEvent:FireServer("TAP", targetPos)
-	        end)
-	    elseif ShootType == "Overheat" then
-	        pcall(function()
-		        Remotes.ShootGunEvent:FireServer(targetPos, {})
-	        end)
-		else
-		    pcall(function()
-		        Remotes.ShootGunEvent:FireServer(targetPos)
-	    	end)
-		end
-		ShootDebounce = now
+        
+        if ShootType == "TAP" then
+            pcall(function()
+                tool.RemoteEvent:FireServer("TAP", targetPos)
+            end)
+        elseif ShootType == "Overheat" then
+            pcall(function()
+                Remotes.ShootGunEvent:FireServer(targetPos, {})
+            end)
+        else
+            pcall(function()
+                Remotes.ShootGunEvent:FireServer(targetPos)
+            end)
+        end
+        ShootDebounce = now
     else
         pcall(function()
             VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 1)
@@ -417,6 +453,7 @@ end
 
 local LastAttack = 0
 local AttackDebounce = 0
+local LastSuccessfulAttack = tick()
 
 local function AttackCycle()
     if not Config.Enabled then return end
@@ -436,36 +473,94 @@ local function AttackCycle()
     local combo = GetComboCount()
     AttackDebounce = now
     
-    -- Execute attack based on weapon type
     if tooltip == "Blox Fruit" then
         ExecuteFruitAttack(tool, targets, combo)
+        LastSuccessfulAttack = now
     elseif tooltip == "Gun" then
         local closestTarget = targets[1]
         if closestTarget and closestTarget[3] <= Config.GunRange then
             ExecuteGunAttack(tool, closestTarget[2].Position)
+            LastSuccessfulAttack = now
         end
     elseif tooltip == "Melee" or tooltip == "Sword" then
         ExecuteMeleeAttack(targets, combo)
+        LastSuccessfulAttack = now
     end
     
-    -- Cleanup ghosts periodically
     CleanGhostTracker()
 end
 
 local FastAttack = {
     Running = false,
-    Connection = nil
+    Connection = nil,
+    HealthConnection = nil,
+    RestartAttempts = 0
 }
 
+-- Watchdog to auto-restart if stuck
+local LastWatchdogCheck = tick()
+function FastAttack:Watchdog()
+    if not Config.AutoRestart then return end
+    if not self.Running then return end
+    
+    local now = tick()
+    if (now - LastWatchdogCheck) < 5 then return end
+    LastWatchdogCheck = now
+    
+    -- Check if we haven't attacked in a while despite having targets
+    if (now - LastSuccessfulAttack) > 10 then
+        local targets = GetAllTargets()
+        if #targets > 0 and CanAttack() then
+            warn("[FastAttack] Watchdog: Script seems stuck, restarting...")
+            self:Stop()
+            task.wait(Config.RestartDelay)
+            self:Start()
+            self.RestartAttempts = self.RestartAttempts + 1
+        end
+    end
+end
+
 function FastAttack:Start()
-    if self.Running then return end
+    if self.Running then 
+        DebugLog("Already running")
+        return 
+    end
     self.Running = true
+    
+    -- Ensure character is valid
+    if not InitializeCharacter() then
+        warn("[FastAttack] Failed to initialize character!")
+        self.Running = false
+        return
+    end
+    
+    -- Ensure remotes are valid
+    if not Remotes.RegisterAttack or not Remotes.RegisterHit then
+        warn("[FastAttack] Remotes not initialized, attempting reinitialization...")
+        if not InitializeRemotes() then
+            warn("[FastAttack] Failed to initialize remotes!")
+            self.Running = false
+            return
+        end
+    end
     
     self.Connection = RunService.Heartbeat:Connect(function()
         pcall(AttackCycle)
+        pcall(function() self:Watchdog() end)
     end)
     
-    print("[FastAttack] Started successfully!")
+    -- Monitor health to detect death
+    if Humanoid and not self.HealthConnection then
+        self.HealthConnection = Humanoid.HealthChanged:Connect(function(health)
+            if health <= 0 and not HealthMonitor.IsDead then
+                HealthMonitor.IsDead = true
+                DebugLog("Player died, preparing for respawn...")
+            end
+        end)
+    end
+    
+    print("[FastAttack] ✅ Started successfully!")
+    LastSuccessfulAttack = tick()
 end
 
 function FastAttack:Stop()
@@ -477,18 +572,23 @@ function FastAttack:Stop()
         self.Connection = nil
     end
     
-    print("[FastAttack] Stopped")
+    if self.HealthConnection then
+        self.HealthConnection:Disconnect()
+        self.HealthConnection = nil
+    end
+    
+    print("[FastAttack] ⏸️ Stopped")
 end
 
 function FastAttack:Toggle()
     Config.Enabled = not Config.Enabled
-    print("[FastAttack] Toggled:", Config.Enabled and "ON" or "OFF")
+    print("[FastAttack] Toggled:", Config.Enabled and "✅ ON" or "❌ OFF")
 end
 
 function FastAttack:SetEnabled(state)
     if Config.Enabled ~= state then
         Config.Enabled = state
-        print("[FastAttack] Set to:", state and "ON" or "OFF")
+        print("[FastAttack] Set to:", state and "✅ ON" or "❌ OFF")
     end
 end
 
@@ -508,23 +608,43 @@ function FastAttack:GetConfig()
     return Config
 end
 
+function FastAttack:GetStatus()
+    return {
+        Running = self.Running,
+        Enabled = Config.Enabled,
+        HasCharacter = Character ~= nil,
+        HasHRP = HRP ~= nil,
+        HasTool = Character and Character:FindFirstChildOfClass("Tool") ~= nil,
+        TargetCount = #GetAllTargets(),
+        RestartAttempts = self.RestartAttempts,
+        LastAttack = LastSuccessfulAttack
+    }
+end
+
+-- Character respawn handler with better reliability
 Player.CharacterAdded:Connect(function(newChar)
-    task.wait(0.5)
+    DebugLog("Character added, reinitializing...")
+    
+    -- Wait for character to fully load
+    task.wait(1)
+    
     InitializeCharacter()
     GhostTracker = {}
     ComboTracker = {Count = 0, LastHit = 0}
+    LastSuccessfulAttack = tick()
     
     if FastAttack.Running then
+        DebugLog("Restarting after respawn...")
         FastAttack:Stop()
-        task.wait(0.3)
+        task.wait(Config.RestartDelay)
         FastAttack:Start()
     end
 end)
 
+-- Initial setup
 InitializeCharacter()
 if not InitializeRemotes() then
-    warn("[FastAttack] Failed to initialize remotes! Please rejoin or report this issue.")
-    return nil
+    warn("[FastAttack] ⚠️ Failed to initialize remotes! Some features may not work.")
 end
 
 -- Disable camera shake
@@ -539,6 +659,24 @@ _ENV.FastAttackConfig = Config
 
 -- Auto-start if enabled
 if Config.Enabled then
+    task.spawn(function()
+        task.wait(1.5)
+        FastAttack:Start()
+    end)
+end
+
+-- Utility commands for debugging
+_ENV.FAStatus = function()
+    local status = FastAttack:GetStatus()
+    print("=== FastAttack Status ===")
+    for k, v in pairs(status) do
+        print(k .. ":", v)
+    end
+end
+
+_ENV.FARestart = function()
+    print("Manually restarting FastAttack...")
+    FastAttack:Stop()
     task.wait(1)
     FastAttack:Start()
 end
