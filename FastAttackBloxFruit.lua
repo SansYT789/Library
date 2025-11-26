@@ -8,13 +8,13 @@ local Config = {
     -- Performance Settings
     AttackDistance = 65,
     MaxTargets = 25,
-    AttackCooldown = 0.05,
+    AttackCooldown = 0,
     
     -- Combat Settings
     UseAdvancedHit = true, -- Use advanced hit function if available
     ComboMode = true,
     MaxCombo = 4,
-    ComboResetTime = 0.35,
+    ComboResetTime = 0.3,
     
     -- Targeting Priority
     PrioritizeClosest = true,
@@ -36,7 +36,7 @@ local Config = {
     -- Gun Settings
     AutoShootGuns = true,
     GunRange = 120,
-    SpecialShoots = {["Skull Guitar"] = "TAP", ["Bazooka"] = "Position", ["Cannon"] = "Position", ["Dragonstorm"] = "Overheat"},
+    SpecialShoots = {["Skull Guitar"] = "TAP", ["Bazooka"] = "Position", ["Cannon"] = "Position", ["Dragonstorm"] = "Position"},
     
     DebugMode = false
 }
