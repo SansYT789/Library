@@ -335,11 +335,13 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
     
     -- Tiki Outpost
     elseif portal == Vector3.new(-16799.091796875, 84.32279968261719, 291.0728454589844) then
-        CommF_:InvokeServer("requestEntrance", Vector3.new(-5058.7749, 314.5155, -3155.8833))
-        task.wait(0.1)
+        if (Vector3.new(-16799.091796875, 84.32279968261719, 291.0728454589844) - HRP.Position).Magnitude > 2000 then
+            CommF_:InvokeServer("requestEntrance", Vector3.new(-5058.7749, 314.5155, -3155.8833))
+            task.wait(0.1)
 
-        HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-        task.wait(0.15)
+            HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
+            task.wait(0.15)
+        end
     
     -- Generic portal
     else
