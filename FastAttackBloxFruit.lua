@@ -8,14 +8,14 @@ local Config = {
     -- Performance Settings
     AttackDistance = 65,
     MaxTargets = 15, -- Reduced for better performance
-    AttackCooldown = 0,
-    UpdateRate = 0.01, -- Target update throttle
+    AttackCooldown = 0.2,
+    UpdateRate = 0.05, -- Target update throttle
 
     -- Combat Settings
     UseAdvancedHit = true,
     ComboMode = true,
     MaxCombo = 4,
-    ComboResetTime = 0.15,
+    ComboResetTime = 0.3,
 
     -- Smart Targeting
     PrioritizeClosest = true,
@@ -24,10 +24,6 @@ local Config = {
     IgnoreBoats = true,
     IgnoreForceField = true,
     RespectTeams = true,
-
-    -- Tool-Based Auto Toggle
-    AutoStopWithoutTool = true, -- Stop when no tool equipped
-    ToolCheckInterval = 0.1, -- How often to check for tool
 
     -- Hitbox Optimization
     HitboxLimbs = {
@@ -325,13 +321,13 @@ local function GetComboCount()
     return ComboTracker.Count
 end
 
-local function ExecuteMeleeAttack(targets, combo)
+local function ExecuteMeleeAttack(targets, cooldown)
     if not targets or #targets == 0 then return end
 
     local mainTarget = targets[1][2]
 
     pcall(function()
-        Remotes.RegisterAttack:FireServer(combo or 0)
+        Remotes.RegisterAttack:FireServer(cooldown or 0)
     end)
 
     pcall(function()
@@ -424,23 +420,10 @@ local function ExecuteGunAttack(tool, targetPos)
 end
 
 local AttackDebounce = 0
-local LastToolCheck = 0
-local HasTool = false
 local function AttackCycle()
     if not Config.Enabled then return end
 
     local now = tick()
-
-    -- Tool-based auto toggle
-    if Config.AutoStopWithoutTool and (now - LastToolCheck) >= Config.ToolCheckInterval then
-        LastToolCheck = now
-        local currentTool = Character and Character:FindFirstChildOfClass("Tool")
-        HasTool = currentTool ~= nil
-
-        if not HasTool then
-            return -- Skip attack cycle if no tool
-        end
-    end
 
     if not CanAttack() then return end
     if (now - AttackDebounce) < Config.AttackCooldown then return end
@@ -449,22 +432,26 @@ local function AttackCycle()
     if not tool then return end
 
     local tooltip = tool.ToolTip
-    local targets = GetAllTargets()
+    if not table.find({"Melee", "Blox Fruit", "Sword", "Gun"}, tooltip) then return end
 
+    local targets = GetAllTargets()
     if #targets == 0 then return end
 
+    local cooldown = tool:FindFirstChild("Cooldown") and tool.Cooldown.Value or Config.AttackCooldown
+    
     local combo = GetComboCount()
-    AttackDebounce = now
+    cooldown = cooldown + (combo >= Config.MaxCombo and 0.05 or 0)
+    AttackDebounce = combo >= Config.MaxCombo and tooltip ~= "Gun" and (now + 0.05) or now
 
-    if tooltip == "Blox Fruit" then
+    if tooltip == "Blox Fruit" and tool:FindFirstChild("LeftClickRemote") then
         ExecuteFruitAttack(tool, targets, combo)
     elseif tooltip == "Gun" then
         local closestTarget = targets[1]
         if closestTarget and closestTarget[3] <= Config.GunRange then
             ExecuteGunAttack(tool, closestTarget[2].Position)
         end
-    elseif tooltip == "Melee" or tooltip == "Sword" then
-        ExecuteMeleeAttack(targets, combo)
+    else
+        ExecuteMeleeAttack(targets, cooldown)
     end
 end
 
@@ -548,7 +535,7 @@ Player.CharacterAdded:Connect(function()
 
     if FastAttack.Running then
         FastAttack:Stop()
-        task.wait(0.5)
+        task.wait(0.3)
         FastAttack:Start()
     end
 end)
