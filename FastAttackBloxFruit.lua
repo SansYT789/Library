@@ -5,34 +5,27 @@ local Config = {
     AttackMobs = true,
     AttackPlayers = true,
 
-    -- Performance Settings (Optimized)
+    -- Performance Settings
     AttackDistance = 65,
     MaxTargets = 15, -- Reduced for better performance
     AttackCooldown = 0,
-    UpdateRate = 0.03, -- Target update throttle
+    UpdateRate = 0.01, -- Target update throttle
 
     -- Combat Settings
     UseAdvancedHit = true,
     ComboMode = true,
     MaxCombo = 4,
-    ComboResetTime = 0.3,
+    ComboResetTime = 0.15,
 
     -- Smart Targeting
     PrioritizeClosest = true,
-    PrioritizeLowHealth = true, -- NEW: Prioritize low HP targets
-    HealthWeightFactor = 0.6, -- NEW: Balance between distance and health
+    PrioritizeLowHealth = true,
+    HealthWeightFactor = 0.6,
     IgnoreBoats = true,
     IgnoreForceField = true,
     RespectTeams = true,
 
-    -- Enhanced Ghost Detection
-    GhostDetection = true,
-    GhostTimeout = 10, -- Time before marking as ghost
-    GhostBloodlossCheck = 5, -- Seconds to check for blood loss
-    GhostRemoveAfter = 15, -- Remove ghost tag after this time
-    GhostDistanceThreshold = 25, -- Distance where ghost detection is more aggressive
-    
-    -- Tool-Based Auto Toggle (NEW)
+    -- Tool-Based Auto Toggle
     AutoStopWithoutTool = true, -- Stop when no tool equipped
     ToolCheckInterval = 0.1, -- How often to check for tool
 
@@ -128,102 +121,9 @@ local function InitializeCharacter()
     Character = Player.Character or Player.CharacterAdded:Wait()
     HRP = Character:WaitForChild("HumanoidRootPart", 5)
     Humanoid = Character:WaitForChild("Humanoid", 5)
-    
+
     DebugLog("Character initialized")
     return HRP and Humanoid
-end
-
--- Enhanced Ghost Detection System
-local GhostTracker = {}
-local LastCleanup = 0
-
-local function IsGhostEnemy(enemy, distance)
-    if not Config.GhostDetection then return false end
-
-    local track = GhostTracker[enemy]
-    local now = tick()
-    
-    if not track then
-        local humanoid = enemy:FindFirstChild("Humanoid")
-        GhostTracker[enemy] = {
-            firstSeen = now,
-            lastHealthCheck = now,
-            initialHealth = humanoid and humanoid.Health or 0,
-            lastHealth = humanoid and humanoid.Health or 0,
-            attackAttempts = 0,
-            noBloodlossTime = 0
-        }
-        return false
-    end
-
-    local humanoid = enemy:FindFirstChild("Humanoid")
-    if not humanoid then return true end
-    
-    local currentHealth = humanoid.Health
-    local timeSinceFirst = now - track.firstSeen
-    local timeSinceHealthCheck = now - track.lastHealthCheck
-
-    -- Check for blood loss
-    local healthLost = track.lastHealth - currentHealth
-    
-    if healthLost > 0.5 then
-        -- Health decreased significantly, reset ghost detection
-        track.lastHealth = currentHealth
-        track.lastHealthCheck = now
-        track.noBloodlossTime = 0
-        track.attackAttempts = 0
-        return false
-    end
-
-    -- More aggressive ghost detection for distant targets
-    local ghostTimeout = Config.GhostTimeout
-    if distance and distance > Config.GhostDistanceThreshold then
-        ghostTimeout = Config.GhostBloodlossCheck
-    end
-
-    -- Track time without blood loss
-    if timeSinceHealthCheck >= 1 then
-        track.noBloodlossTime = track.noBloodlossTime + timeSinceHealthCheck
-        track.lastHealthCheck = now
-        track.attackAttempts = track.attackAttempts + 1
-    end
-
-    track.lastHealth = currentHealth
-
-    -- Mark as ghost if no blood loss for too long
-    if track.noBloodlossTime >= ghostTimeout and track.attackAttempts > 3 then
-        track.isGhost = true
-        track.ghostMarkedTime = now
-        DebugLog("Ghost detected:", enemy.Name, "Distance:", distance)
-        return true
-    end
-
-    -- Remove ghost tag after timeout
-    if track.isGhost and track.ghostMarkedTime then
-        if (now - track.ghostMarkedTime) > Config.GhostRemoveAfter then
-            DebugLog("Removing ghost tag:", enemy.Name)
-            GhostTracker[enemy] = nil
-            return false
-        end
-        return true
-    end
-
-    return false
-end
-
-local function CleanGhostTracker()
-    local now = tick()
-    if (now - LastCleanup) < 5 then return end
-
-    for enemy, track in pairs(GhostTracker) do
-        if not enemy or not enemy.Parent then
-            GhostTracker[enemy] = nil
-        elseif track.isGhost and track.ghostMarkedTime and (now - track.ghostMarkedTime) > Config.GhostRemoveAfter then
-            GhostTracker[enemy] = nil
-        end
-    end
-    
-    LastCleanup = now
 end
 
 local function IsEntityAlive(entity)
@@ -307,17 +207,16 @@ end
 
 local LastTargetUpdate = 0
 local CachedTargets = {}
-
 local function GetAllTargets()
     if not HRP or not Config.Enabled then return {} end
 
     local now = tick()
-    
+
     -- Throttle target updates for performance
     if (now - LastTargetUpdate) < Config.UpdateRate and #CachedTargets > 0 then
         return CachedTargets
     end
-    
+
     LastTargetUpdate = now
 
     local targets = Config.UseObjectPooling and GetTable() or {}
@@ -346,9 +245,6 @@ local function GetAllTargets()
                 if dist > maxDist then continue end
 
                 if not IsEntityAlive(enemy) then continue end
-
-                -- Enhanced ghost check with distance
-                if IsGhostEnemy(enemy, dist) then continue end
 
                 local humanoid = enemy:FindFirstChild("Humanoid")
                 local health = humanoid and humanoid.Health or 0
@@ -411,7 +307,6 @@ local function GetAllTargets()
 end
 
 local ComboTracker = {Count = 0, LastHit = 0}
-
 local function GetComboCount()
     if not Config.ComboMode then return 0 end
 
@@ -493,7 +388,7 @@ local function ExecuteGunAttack(tool, targetPos)
     if (now - ShootDebounce) < cooldown then return end
 
     local ShootType = Config.SpecialShoots[tool.Name] or "Normal"
-    
+
     if ShootType == "Position" or (ShootType == "TAP" and tool:FindFirstChild("RemoteEvent")) then
         pcall(function()
             tool:SetAttribute("LocalTotalShots", (tool:GetAttribute("LocalTotalShots") or 0) + 1)
@@ -531,18 +426,17 @@ end
 local AttackDebounce = 0
 local LastToolCheck = 0
 local HasTool = false
-
 local function AttackCycle()
     if not Config.Enabled then return end
 
     local now = tick()
-    
+
     -- Tool-based auto toggle
     if Config.AutoStopWithoutTool and (now - LastToolCheck) >= Config.ToolCheckInterval then
         LastToolCheck = now
         local currentTool = Character and Character:FindFirstChildOfClass("Tool")
         HasTool = currentTool ~= nil
-        
+
         if not HasTool then
             return -- Skip attack cycle if no tool
         end
@@ -572,8 +466,6 @@ local function AttackCycle()
     elseif tooltip == "Melee" or tooltip == "Sword" then
         ExecuteMeleeAttack(targets, combo)
     end
-
-    CleanGhostTracker()
 end
 
 local FastAttack = {
@@ -586,14 +478,14 @@ function FastAttack:Start()
     self.Running = true
 
     if not InitializeCharacter() then
-        warn("[FastAttack] Failed to initialize character!")
+        DebugLog("Failed to initialize character!")
         self.Running = false
         return
     end
 
     if not Remotes.RegisterAttack or not Remotes.RegisterHit then
         if not InitializeRemotes() then
-            warn("[FastAttack] Failed to initialize remotes!")
+            DebugLog("Failed to initialize remotes!")
             self.Running = false
             return
         end
@@ -604,7 +496,7 @@ function FastAttack:Start()
         pcall(AttackCycle)
     end)
 
-    print("[FastAttack] ✅ Started")
+    DebugLog("✅ Started")
 end
 
 function FastAttack:Stop()
@@ -616,12 +508,12 @@ function FastAttack:Stop()
         self.Connection = nil
     end
 
-    print("[FastAttack] ⏸️ Stopped")
+    DebugLog("⏸️ Stopped")
 end
 
 function FastAttack:Toggle()
     Config.Enabled = not Config.Enabled
-    print("[FastAttack]", Config.Enabled and "✅ ON" or "❌ OFF")
+    DebugLog(Config.Enabled and "✅ ON" or "❌ OFF")
 end
 
 function FastAttack:SetEnabled(state)
@@ -633,7 +525,7 @@ function FastAttack:SetEnabled(state)
         elseif not Config.Enabled and self.Running then
             FastAttack:Stop()
         end
-        print("[FastAttack] Set to:", state and "✅ ON" or "❌ OFF")
+        DebugLog("Set to:", state and "✅ ON" or "❌ OFF")
     end
 end
 
@@ -644,33 +536,16 @@ function FastAttack:UpdateConfig(newConfig)
             Config[key] = value
         end
     end
-    print("[FastAttack] Config updated")
-end
-
-function FastAttack:GetStatus()
-    return {
-        Running = self.Running,
-        Enabled = Config.Enabled,
-        HasTool = HasTool,
-        TargetCount = #CachedTargets,
-        GhostCount = (function()
-            local count = 0
-            for _, track in pairs(GhostTracker) do
-                if track.isGhost then count = count + 1 end
-            end
-            return count
-        end)()
-    }
+    DebugLog("Config updated")
 end
 
 -- Character respawn handler
 Player.CharacterAdded:Connect(function()
     task.wait(1)
     InitializeCharacter()
-    GhostTracker = {}
     ComboTracker = {Count = 0, LastHit = 0}
     CachedTargets = {}
-    
+
     if FastAttack.Running then
         FastAttack:Stop()
         task.wait(0.5)
@@ -699,12 +574,6 @@ if Config.Enabled then
         FastAttack:Start()
     end)
 end
-
--- Debug commands
-_ENV.FAStatus = function()
-    local status = FastAttack:GetStatus()
-    print("=== FastAttack Status ===")
-    for k, v in pairs(status) do print(k .. ":", v) end
-end
+print("Fast Attack Loaded")
 
 return FastAttack
