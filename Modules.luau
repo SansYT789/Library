@@ -64,6 +64,7 @@ local State = {
     hoverClip = nil,
     boatHoverClips = {},
     tweenCooldown = 0,
+    boatOriginalCollision = {},
     performance = {
         tweenCount = 0,
         avgTweenTime = 0,
@@ -131,9 +132,8 @@ function Modules:GetBoatSpeed()
     return Config.Tween.defaultBoatTweenSpeed
 end
 
--- Enhanced Hover System
+-- Hover System
 Modules.Hover = {}
-
 function Modules.Hover:Ensure()
     if not Modules:ValidateReferences() then return end
     
@@ -162,23 +162,32 @@ function Modules.Hover:Remove()
     end
 end
 
+-- Create storage table if not exists
+Modules.Hover._originalCollisions = Modules.Hover._originalCollisions or {}
 function Modules.Hover:SetNoClip(enabled)
     if not Modules:ValidateReferences() then return end
-    
+    local cache = Modules.Hover._originalCollisions
+
     if enabled then
         self:Ensure()
         for _, part in pairs(Character:GetDescendants()) do
             if part:IsA("BasePart") then
+                -- Save original state only once
+                if cache[part] == nil then
+                    cache[part] = part.CanCollide
+                end
                 part.CanCollide = false
             end
         end
     else
         self:Remove()
-        for _, part in pairs(Character:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = true
+        for part, originalState in pairs(cache) do
+            if part and part:IsA("BasePart") then
+                part.CanCollide = originalState
             end
         end
+        -- Clear cache
+        table.clear(cache)
     end
 end
 
@@ -227,14 +236,19 @@ function Modules.CheckInMyBoat()
     return Humanoid.Sit and (HRP.Position - vehicleSeat.Position).Magnitude <= 5
 end
 
--- Enhanced Boat Hover System
+-- Boat Hover System
 function Modules:ManageBoatHover(boat, enabled)
     if not boat or not boat:FindFirstChild("VehicleSeat") then return end
-    
+
     local vehicleSeat = boat.VehicleSeat
     local bv = vehicleSeat:FindFirstChild("boatHoverTweenVin")
     
+    -- Prepare cache for this boat
+    State.boatOriginalCollision[boat] = State.boatOriginalCollision[boat] or {}
+    local cache = State.boatOriginalCollision[boat]
+    
     if enabled then
+        -- Create BodyVelocity if not exists
         if not bv then
             bv = Instance.new("BodyVelocity")
             bv.Name = "boatHoverTweenVin"
@@ -243,31 +257,36 @@ function Modules:ManageBoatHover(boat, enabled)
             bv.Parent = vehicleSeat
             State.boatHoverClips[boat] = bv
         end
-        
-        -- Disable collision for boat parts
+        -- Turn off collision (and cache original state)
         for _, part in pairs(boat:GetDescendants()) do
             if part:IsA("BasePart") then
+                if cache[part] == nil then
+                    cache[part] = part.CanCollide
+                end
                 part.CanCollide = false
             end
         end
     else
+        -- Destroy hover force
         if bv then
             bv:Destroy()
             State.boatHoverClips[boat] = nil
         end
         
-        -- Re-enable collision
-        for _, part in pairs(boat:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = true
+        -- Restore original collision
+        for part, original in pairs(cache) do
+            if part and part:IsA("BasePart") then
+                part.CanCollide = original
             end
         end
+        
+        -- Cleanup cache for this boat
+        State.boatOriginalCollision[boat] = nil
     end
 end
 
 -- Portal System
 Modules.Portal = {}
-
 local PortalLocations = {
     Sea3 = {
         ["Castle On The Sea"] = Vector3.new(-5058.7749, 314.5155, -3155.8833),
@@ -296,9 +315,7 @@ local PortalLocations = {
 }
 
 function Modules.Portal:GetClosest(targetCFrame)
-    if not targetCFrame or not Modules:ValidateReferences() then 
-        return nil 
-    end
+    if not targetCFrame or not Modules:ValidateReferences() then return nil end
 
     local seaTable = Sea3 and PortalLocations.Sea3 
                   or Sea2 and PortalLocations.Sea2 
@@ -308,29 +325,26 @@ function Modules.Portal:GetClosest(targetCFrame)
 
     local targetPos = targetCFrame.Position
     local hrpPos = HRP.Position
-    local directDist = (targetPos - hrpPos).Magnitude
-
     local closestPortal = nil
-    local bestSaving = 0
+    local closestDist = math.huge
 
     for _, portalPos in pairs(seaTable) do
-        local distToPortal = (portalPos - hrpPos).Magnitude
-        local distFromPortal = (targetPos - portalPos).Magnitude
-        local totalDist = distToPortal + distFromPortal
-        local saving = directDist - totalDist
-
-        if saving > 1000 and saving > bestSaving then
-            bestSaving = saving
+        local distFromPortal = (portalPos - targetPos).Magnitude
+        if distFromPortal < closestDist then
             closestPortal = portalPos
+            closestDist = distFromPortal
         end
     end
-
-    return closestPortal
+    
+    if closestPortal and closestDist <= (targetPos - hrpPos).Magnitude then
+        return closestPortal
+    end
+    
+    return nil
 end
 
--- Enhanced Tween System
+-- Tween System
 Modules.Tween = {}
-
 function Modules.Tween:CalculateTweenInfo(distance, customSpeed)
     local speed = customSpeed or Modules:GetTweenSpeed()
     local duration = distance / speed
@@ -527,7 +541,7 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
         local castlePos = Vector3.new(-5058.7749, 314.5155, -3155.8833)
         local submarinePos = Vector3.new(-16269.408203125, 23.979995727539062, 1371.662353515625)
 
-        if (castlePos - HRP.Position).Magnitude > 2000 then
+        if (submarinePos - HRP.Position).Magnitude > 1205 then
             CommF_:InvokeServer("requestEntrance", castlePos)
             task.wait(0.5)
 
@@ -546,12 +560,13 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
 
         task.wait(0.2)
 
-        if Modules:ValidateReferences() and (submarinePos - HRP.Position).Magnitude <= 30 then
+        if Modules:ValidateReferences() and (submarinePos - HRP.Position).Magnitude <= 15 then
             local rep = Services.ReplicatedStorage
             local modules = rep:FindFirstChild("Modules")
             local net = modules and modules:FindFirstChild("Net")
             local rf = net and net:FindFirstChild("RF/SubmarineWorkerSpeak")
             
+            self:StopAll(true)
             if rf then
                 rf:InvokeServer("TravelToSubmergedIsland")
                 task.wait(1)
@@ -561,14 +576,33 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
     -- Tiki Outpost
     elseif (portal - Vector3.new(-16799.091796875, 84.32279968261719, 291.0728454589844)).Magnitude < 10 then
         local castlePos = Vector3.new(-5058.7749, 314.5155, -3155.8833)
+        local tikiPos = Vector3.new(-16799.091796875, 84.32279968261719, 291.0728454589844)
         
-        if (castlePos - HRP.Position).Magnitude > 2000 then
+        if (tikiPos - HRP.Position).Magnitude > 2000 then
             CommF_:InvokeServer("requestEntrance", castlePos)
             task.wait(0.5)
 
             if Modules:ValidateReferences() then
                 HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
                 task.wait(0.3)
+            end
+        elseif (castlePos - HRP.Position).Magnitude < 750 then
+            if (Vector3.new(-5097.1318359375, 318.50201416015625, -3178.3984375) - HRP.Position).Magnitude < 100 then
+                if Modules:ValidateReferences() then
+                    if State.isTweening then
+                        self:StopAll(true)
+                    end
+
+                    HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
+                    task.wait(0.3)
+                end
+            else
+                local tikiDist = (Vector3.new(-5097.1318359375, 318.50201416015625, -3178.3984375) - HRP.Position).Magnitude
+                local tikiTweenInfo = self:CalculateTweenInfo(tikiDist)
+            
+                State.currentTween = Services.TweenService:Create(HRP, tikiTweenInfo, {CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)})
+                State.currentTween:Play()
+                State.currentTween.Completed:Wait()
             end
         end
 
@@ -670,7 +704,6 @@ end
 
 -- Advanced Features
 Modules.Advanced = {}
-
 function Modules.Advanced:SmoothTeleport(targetCFrame, segments)
     segments = segments or 5
     if not Modules:ValidateReferences() then return end
