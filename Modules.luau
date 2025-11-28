@@ -1,6 +1,6 @@
 local Modules = {}
 Modules.__index = Modules
-Modules.Version = "1.6.5"
+Modules.Version = "1.6.6"
 
 -- Service caching
 local Services = {
@@ -15,14 +15,16 @@ local Services = {
 -- Configuration
 local Config = {
     Tween = {
-        defaultTweenSpeed = 300,
-        defaultBoatTweenSpeed = 150,
+        defaultTweenSpeed = 300, -- studs per second
+        defaultBoatTweenSpeed = 150, -- studs per second
         easingStyle = Enum.EasingStyle.Linear,
         easingDirection = Enum.EasingDirection.Out,
         adaptiveSpeed = true,
         minTweenTime = 0.1,
         maxTweenTime = 10,
-        smoothTransition = true
+        smoothTransition = true,
+        instantTeleportDistance = 300, -- distance threshold for instant teleport
+        maxTweenSpeed = 450
     },
     Performance = {
         updateInterval = 0.1,
@@ -114,22 +116,30 @@ function Modules:ValidateReferences()
 end
 
 function Modules:GetTweenSpeed()
+    local baseSpeed = Config.Tween.defaultTweenSpeed
+    
     if Config.Tween.adaptiveSpeed then
-        -- Adjust speed based on current performance
-        local fps = 1 / (tick() - State.performance.lastFrameTime)
-        State.performance.lastFrameTime = tick()
+        local currentTime = tick()
+        local deltaTime = currentTime - State.performance.lastFrameTime
+        State.performance.lastFrameTime = currentTime
         
+        -- Calculate FPS with safety check
+        local fps = deltaTime > 0 and (1 / deltaTime) or 60
+        
+        -- Apply moderate speed adjustments based on FPS
         if fps < 30 then
-            return Config.Tween.defaultTweenSpeed * 0.8
+            baseSpeed = baseSpeed * 0.85 -- Slightly slower on low FPS
         elseif fps > 60 then
-            return Config.Tween.defaultTweenSpeed * 1.2
+            baseSpeed = baseSpeed * 1.1 -- Slightly faster on high FPS
         end
     end
-    return Config.Tween.defaultTweenSpeed
+    
+    -- Clamp speed to reasonable values
+    return math.clamp(baseSpeed, 50, 500)
 end
 
 function Modules:GetBoatSpeed()
-    return Config.Tween.defaultBoatTweenSpeed
+    return math.clamp(Config.Tween.defaultBoatTweenSpeed, 50, 300)
 end
 
 -- Hover System
@@ -346,10 +356,16 @@ end
 -- Tween System
 Modules.Tween = {}
 function Modules.Tween:CalculateTweenInfo(distance, customSpeed)
+    -- Get speed in studs per second
     local speed = customSpeed or Modules:GetTweenSpeed()
+    
+    -- Ensure speed is positive and reasonable
+    speed = math.min(math.max(speed, 150), maxTweenSpeed)
+    
+    -- Calculate duration: time = distance / speed
     local duration = distance / speed
     
-    -- Clamp duration
+    -- Clamp duration to configured limits
     duration = math.clamp(
         duration, 
         Config.Tween.minTweenTime, 
@@ -394,7 +410,7 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
     local dist = (targetCFrame.Position - HRP.Position).Magnitude
     
     -- Instant teleport for short distances
-    if dist <= 300 then
+    if dist <= Config.Tween.instantTeleportDistance then
         HRP.CFrame = targetCFrame
         State.isTweening = false
         return
@@ -1200,4 +1216,5 @@ _G.Modules = Modules
 game:GetService("Players").LocalPlayer.AncestryChanged:Connect(function()
     Modules:Cleanup()
 end)
+
 return Modules
