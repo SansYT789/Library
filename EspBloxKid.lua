@@ -1,10 +1,3 @@
---[[
-    Enhanced ESP Library v2.0 - FIXED
-    Optimized performance with caching, debouncing, and efficient rendering
-    Modular configuration system for easy management
-    Fixed: ESP cleanup when categories are disabled
-]]
-
 local ESPLibrary = {}
 ESPLibrary.__index = ESPLibrary
 
@@ -198,6 +191,19 @@ local function updateOrCreateESP(parent, espName, updateFunc)
     end
 end
 
+local function isEnemyPlayer(plr)
+    local myTeam = localPlayer.Team
+    local hisTeam = plr.Team
+
+    -- Pirates = beat everyone
+    if myTeam == nil or (myTeam.Name == "Pirates") then
+        return true
+    end
+
+    -- Marines = only consider other Marines as allies
+    return hisTeam ~= myTeam
+end
+
 -- Player ESP System
 function ESPLibrary:UpdatePlayerESP()
     if not Config.Players.Enabled then
@@ -244,7 +250,7 @@ function ESPLibrary:UpdatePlayerESP()
                     text = text .. "\nHealth: " .. health .. "%"
                 end
 
-                if Config.Players.TeamCheck and player.Team ~= localPlayer.Team then
+                if Config.Players.TeamCheck and isEnemyPlayer(player) then
                     if Config.Players.ShowKen then
                         local kenActive = player:GetAttribute("KenActive") and "Ken: ON" or "Ken: OFF"
                         local dodgeLeft = player:GetAttribute("KenDodgesLeft") or 0
