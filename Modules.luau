@@ -359,8 +359,8 @@ function Modules.Tween:CalculateTweenInfo(distance, customSpeed)
     -- Get speed in studs per second
     local speed = customSpeed or Modules:GetTweenSpeed()
     
-    -- Ensure speed is positive and reasonable
-    speed = math.min(math.max(speed, 150), maxTweenSpeed)
+    -- FIX 1: Use Config.Tween.maxTweenSpeed instead of undefined maxTweenSpeed
+    speed = math.min(math.max(speed, 150), Config.Tween.maxTweenSpeed)
     
     -- Calculate duration: time = distance / speed
     local duration = distance / speed
@@ -394,6 +394,7 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
     end
     State.tweenCooldown = tick() + 0.15
     
+    -- FIX 2: Properly stop existing tweens before starting new one
     if State.isTweening then
         self:StopAll(false)
         task.wait(0.1)
@@ -461,10 +462,12 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
     local tweenPlrFunc = {}
     function tweenPlrFunc:Stop()
         State.isTweening = false
-        if State.currentTween then
+        -- FIX 3: Cancel tween before cleanup
+        if State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
             State.currentTween:Cancel()
-            State.currentTween = nil
         end
+        State.currentTween = nil
+        
         if monitorTask then
             task.cancel(monitorTask)
         end
@@ -474,13 +477,17 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
     -- Wait for completion
     if State.currentTween then
         local startTime = tick()
-        State.currentTween.Completed:Wait()
+        local success = pcall(function()
+            State.currentTween.Completed:Wait()
+        end)
         
         -- Update performance metrics
-        local tweenTime = tick() - startTime
-        State.performance.tweenCount = State.performance.tweenCount + 1
-        State.performance.avgTweenTime = 
-            (State.performance.avgTweenTime + tweenTime) / 2
+        if success then
+            local tweenTime = tick() - startTime
+            State.performance.tweenCount = State.performance.tweenCount + 1
+            State.performance.avgTweenTime = 
+                (State.performance.avgTweenTime + tweenTime) / 2
+        end
         
         if Modules:ValidateReferences() then
             HRP.CFrame = targetCFrame
@@ -662,14 +669,16 @@ function Modules.Tween:Boat(targetCFrame, autoManage)
     
     local boatTweenFunc = {}
     function boatTweenFunc:Stop()
-        if tween then
+        -- FIX 4: Check if tween is still playing before cancelling
+        if tween and tween.PlaybackState == Enum.PlaybackState.Playing then
             tween:Cancel()
-            
-            -- Remove from active tweens
-            for i = #State.activeTweens, 1, -1 do
-                if State.activeTweens[i] == tween then
-                    table.remove(State.activeTweens, i)
-                end
+        end
+        
+        -- Remove from active tweens
+        for i = #State.activeTweens, 1, -1 do
+            if State.activeTweens[i] == tween then
+                table.remove(State.activeTweens, i)
+                break
             end
         end
         
@@ -687,6 +696,7 @@ function Modules.Tween:Boat(targetCFrame, autoManage)
         for i = #State.activeTweens, 1, -1 do
             if State.activeTweens[i] == tween then
                 table.remove(State.activeTweens, i)
+                break
             end
         end
     end)
@@ -697,22 +707,32 @@ end
 function Modules.Tween:StopAll(stopMovement)
     State.isTweening = false
     
-    -- Stop all active tweens
+    -- FIX 5: Cancel and remove tweens in reverse order to avoid index issues
     for i = #State.activeTweens, 1, -1 do
-        if State.activeTweens[i] and State.activeTweens[i].PlaybackState == Enum.PlaybackState.Playing then
-            State.activeTweens[i]:Cancel()
+        local tween = State.activeTweens[i]
+        if tween and tween.PlaybackState == Enum.PlaybackState.Playing then
+            pcall(function() tween:Cancel() end)
         end
-        table.remove(State.activeTweens, i)
+        State.activeTweens[i] = nil
     end
     
-    if State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
-        State.currentTween:Cancel()
+    -- Clear the table
+    table.clear(State.activeTweens)
+    
+    -- FIX 6: Safely cancel current tween
+    if State.currentTween then
+        if State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
+            pcall(function() State.currentTween:Cancel() end)
+        end
         State.currentTween = nil
     end
 
+    -- FIX 7: Only stop movement if references are valid
     if stopMovement ~= false and Modules:ValidateReferences() then
-        HRP.CFrame = HRP.CFrame
-        HRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        pcall(function()
+            HRP.CFrame = HRP.CFrame
+            HRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        end)
         
         Modules.Hover:Remove()
     end
