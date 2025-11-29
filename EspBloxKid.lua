@@ -192,16 +192,23 @@ local function updateOrCreateESP(parent, espName, updateFunc)
 end
 
 local function isEnemyPlayer(plr)
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer or not plr then return false end
+    if plr == localPlayer then return false end
+
     local myTeam = localPlayer.Team
     local hisTeam = plr.Team
 
-    -- Pirates = beat everyone
-    if myTeam == nil or (myTeam.Name == "Pirates") then
-        return true
-    end
+    -- Pirates = beat everyone (except self)
+    if myTeam and myTeam.Name == "Pirates" then return true end
 
     -- Marines = only consider other Marines as allies
-    return hisTeam ~= myTeam
+    if myTeam and myTeam.Name == "Marines" then return not (hisTeam and hisTeam == myTeam) end
+
+    -- Default: if teams are equal (including both nil) -> not enemy; otherwise enemy
+    if myTeam == hisTeam then return false end
+
+    return true
 end
 
 -- Player ESP System
@@ -461,33 +468,30 @@ end
 local function getAccurateFruitName(v)
     if not v then return "Fruit [ ??? ]" end
 
-    local clean = v.Name:lower():gsub("%s+", "")
-    if isValidFruitName(v.Name) and clean ~= "fruit" then
-        return v.Name
-    end
+    local lowerName = v.Name:lower()
+    if isValidFruitName(v.Name) and lowerName ~= "fruit" then return v.Name end
 
-    local fruitModel = v:FindFirstChild("Fruit") or v:WaitForChild("Fruit", 5)
-    if not fruitModel then return "Fruit [ ??? ]" end
+    local fruitModel = v:FindFirstChild("Fruit") or v:WaitForChild("Fruit", 3)
+    if not fruitModel then return v.Name .. " [ ??? ]" end
 
-    local idleObj = fruitModel:FindFirstChildWhichIsA("Animation") or fruitModel:FindFirstChild("Fruit")
-    if not idleObj then return "Fruit [ ??? ]" end
+    local idleObj = fruitModel:FindFirstChildWhichIsA("Animation") or fruitModel:FindFirstChildWhichIsA("MeshPart") or fruitModel:FindFirstChild("Fruit")
+    if not idleObj then return v.Name .. " [ ??? ]" end
 
-    local property = nil
+    local assetId = nil
     if idleObj:IsA("Animation") then
-        property = "AnimationId"
+        assetId = idleObj.AnimationId
     elseif idleObj:IsA("MeshPart") then
-        property = "MeshId"
-    else
-        return "Fruit [ ??? ]"
+        assetId = idleObj.MeshId
     end
+    if not assetId or assetId == "" then return v.Name .. " [ ??? ]" end
 
-    local idValue = idleObj[property]
-    if not idValue or idValue == "" then return "Fruit [ ??? ]" end
+    local normalized = normalizeIdValue(assetId)
+    if not normalized then return v.Name .. " [ ??? ]" end
 
-    local normalizedId = normalizeIdValue(idValue)
-    if not normalizedId then return "Fruit [ ??? ]" end
+    local nameId = realFruitNameIds[normalized]
+    if nameId then return v.Name .. "[ " .. nameId .. " ]" end
 
-    return realFruitNameIds[normalizedId] and ("Fruit [ " .. realFruitNameIds[normalizedId] .. " ]") or "Fruit [ ??? ]"
+    return "Fruit [ ??? ]"
 end
 
 -- Devil Fruit ESP System (FIXED)
