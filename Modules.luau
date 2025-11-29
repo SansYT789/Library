@@ -17,14 +17,12 @@ local Config = {
     Tween = {
         defaultTweenSpeed = 300, -- studs per second
         defaultBoatTweenSpeed = 150, -- studs per second
-        easingStyle = Enum.EasingStyle.Linear,
-        easingDirection = Enum.EasingDirection.Out,
-        adaptiveSpeed = true,
-        minTweenTime = 0.1,
-        maxTweenTime = 10,
+        adaptiveSpeed = false,
         smoothTransition = true,
         instantTeleportDistance = 300, -- distance threshold for instant teleport
-        maxTweenSpeed = 450
+        maxTweenSpeed = 350,
+        velocityCap = 150,
+        positionUpdateRate = 0.05
     },
     Performance = {
         updateInterval = 0.1,
@@ -35,7 +33,9 @@ local Config = {
     Safety = {
         autoStopOnDeath = true,
         preventStuck = true,
-        collisionCheckInterval = 0.2
+        collisionCheckInterval = 0.2,
+        maxVelocityMagnitude = 150,
+        smoothingFactor = 0.3
     }
 }
 
@@ -157,9 +157,10 @@ function Modules.Hover:Ensure()
 
     State.hoverClip = Instance.new("BodyVelocity")
     State.hoverClip.Name = "VinreachHoverClip"
-    State.hoverClip.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+    -- Force to not interfere with tween
+    State.hoverClip.MaxForce = Vector3.new(0, 9e4, 0) -- Only Y-axis now
     State.hoverClip.Velocity = Vector3.new(0, 0, 0)
-    State.hoverClip.P = 9000
+    State.hoverClip.P = 5000 -- Reduced for smoother movement
     State.hoverClip.Parent = HRP
     
     return State.hoverClip
@@ -182,7 +183,6 @@ function Modules.Hover:SetNoClip(enabled)
         self:Ensure()
         for _, part in pairs(Character:GetDescendants()) do
             if part:IsA("BasePart") then
-                -- Save original state only once
                 if cache[part] == nil then
                     cache[part] = part.CanCollide
                 end
@@ -196,14 +196,16 @@ function Modules.Hover:SetNoClip(enabled)
                 part.CanCollide = originalState
             end
         end
-        -- Clear cache
         table.clear(cache)
     end
 end
 
 -- Heartbeat connection for hover stability
 Services.RunService.Heartbeat:Connect(function()
-    if State.hoverClip and State.hoverClip.Parent then
+    if State.hoverClip and State.hoverClip.Parent and State.isTweening then
+        -- During tween, only provide minimal upward force
+        State.hoverClip.Velocity = Vector3.new(0, 0, 0)
+    elseif State.hoverClip and State.hoverClip.Parent then
         State.hoverClip.Velocity = Vector3.new(0, 0, 0)
     end
 end)
@@ -357,31 +359,22 @@ end
 Modules.Tween = {}
 function Modules.Tween:CalculateTweenInfo(distance, customSpeed)
     -- Get speed in studs per second
-    local speed = customSpeed or Modules:GetTweenSpeed()
+    local speed = customSpeed or Config.Tween.defaultTweenSpeed
     
-    -- FIX 1: Use Config.Tween.maxTweenSpeed instead of undefined maxTweenSpeed
-    speed = math.min(math.max(speed, 150), Config.Tween.maxTweenSpeed)
+    -- Clamp speed to safe values
+    speed = math.clamp(speed, 150, Config.Tween.maxTweenSpeed)
     
-    -- Calculate duration: time = distance / speed
+    -- CORRECT FORMULA: duration = distance / speed
     local duration = distance / speed
     
-    -- Clamp duration to configured limits
-    duration = math.clamp(
-        duration, 
-        Config.Tween.minTweenTime, 
-        Config.Tween.maxTweenTime
-    )
-    
-    -- Use smooth easing for shorter distances
-    local easing = Config.Tween.easingStyle
-    if Config.Tween.smoothTransition and distance < 1000 then
-        easing = Enum.EasingStyle.Quad
-    end
+    -- Use Linear for predictable speed
+    local easing = Enum.EasingStyle.Linear
+    local direction = Enum.EasingDirection.InOut
     
     return TweenInfo.new(
         duration,
         easing,
-        Config.Tween.easingDirection
+        direction
     )
 end
 
@@ -394,10 +387,9 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
     end
     State.tweenCooldown = tick() + 0.15
     
-    -- FIX 2: Properly stop existing tweens before starting new one
     if State.isTweening then
         self:StopAll(false)
-        task.wait(0.1)
+        task.wait(0.2) -- Increased wait time
     end
 
     State.isTweening = true
@@ -405,12 +397,12 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
     -- Unsit if sitting
     if Humanoid.Sit then
         Humanoid.Sit = false
-        task.wait(0.1)
+        task.wait(0.2)
     end
 
     local dist = (targetCFrame.Position - HRP.Position).Magnitude
     
-    -- Instant teleport for short distances
+    -- Instant teleport for very short distances
     if dist <= Config.Tween.instantTeleportDistance then
         HRP.CFrame = targetCFrame
         State.isTweening = false
@@ -419,9 +411,24 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
 
     -- Enable hover and noclip
     Modules.Hover:SetNoClip(true)
+    
+    -- NEW: Velocity control connection
+    local velocityControl
+    local monitorTask
+    
+    -- NEW: Safe velocity limiter
+    velocityControl = Services.RunService.Heartbeat:Connect(function()
+        if not State.isTweening or not Modules:ValidateReferences() then return end
+        
+        -- Cap velocity to prevent server kicks
+        local currentVelocity = HRP.AssemblyLinearVelocity
+        if currentVelocity.Magnitude > Config.Safety.maxVelocityMagnitude then
+            HRP.AssemblyLinearVelocity = currentVelocity.Unit * Config.Safety.maxVelocityMagnitude
+        end
+    end)
 
     -- Monitor button state and health
-    local monitorTask = task.spawn(function()
+    monitorTask = task.spawn(function()
         while State.isTweening do
             State.btnStateTween = btnState or false
             
@@ -451,7 +458,7 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
     if portal and CommF_ then
         self:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
     else
-        -- Direct tween without portal
+        -- Direct tween
         State.currentTween = Services.TweenService:Create(HRP, tweenInfo, {CFrame = targetCFrame})
         State.currentTween:Play()
         
@@ -462,7 +469,12 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
     local tweenPlrFunc = {}
     function tweenPlrFunc:Stop()
         State.isTweening = false
-        -- FIX 3: Cancel tween before cleanup
+        
+        -- Disconnect velocity control
+        if velocityControl then
+            velocityControl:Disconnect()
+        end
+        
         if State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
             State.currentTween:Cancel()
         end
@@ -471,6 +483,13 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
         if monitorTask then
             task.cancel(monitorTask)
         end
+        
+        -- Stop all movement
+        if Modules:ValidateReferences() then
+            HRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            HRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+        end
+        
         Modules.Hover:SetNoClip(false)
     end
 
@@ -481,7 +500,6 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
             State.currentTween.Completed:Wait()
         end)
         
-        -- Update performance metrics
         if success then
             local tweenTime = tick() - startTime
             State.performance.tweenCount = State.performance.tweenCount + 1
@@ -489,11 +507,20 @@ function Modules.Tween:ToTarget(targetCFrame, btnState)
                 (State.performance.avgTweenTime + tweenTime) / 2
         end
         
+        -- Final position set with smoothing
         if Modules:ValidateReferences() then
+            task.wait(0.1) -- Small delay for server sync
             HRP.CFrame = targetCFrame
+            HRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            HRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
         end
     end
 
+    -- Cleanup
+    if velocityControl then
+        velocityControl:Disconnect()
+    end
+    
     State.isTweening = false
     Modules.Hover:SetNoClip(false)
 
@@ -527,22 +554,22 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
         
         if Services.Workspace:FindFirstChild("Temple of Time") and (templePos - HRP.Position).Magnitude > 1000 then
             CommF_:InvokeServer("requestEntrance", templePos)
-            task.wait(0.5)
+            task.wait(1) -- Increased wait for server
         end
     
     -- Great Tree
     elseif (portal - Vector3.new(3028.209228515625, 2280.84619140625, -7324.2880859375)).Magnitude < 10 then
         if (templePos - HRP.Position).Magnitude > 1000 then
             CommF_:InvokeServer("requestEntrance", templePos)
-            task.wait(0.5)
+            task.wait(1)
         end
 
         HRP.CFrame = CFrame.new(28609.650390625, 14896.5458984375, 105.68901062011719)
-        task.wait(0.3)
+        task.wait(0.5)
 
         if Modules:ValidateReferences() and (HRP.Position - Vector3.new(28609.6504, 14896.5459, 105.6890)).Magnitude <= 20 then
             CommF_:InvokeServer("RaceV4Progress", "TeleportBack")
-            task.wait(0.5)
+            task.wait(1)
         end
     
     -- Dimension Shift
@@ -555,7 +582,7 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
             local main = mirror:FindFirstChild("Main")
             if main then
                 HRP.CFrame = main.CFrame
-                task.wait(0.3)
+                task.wait(0.5)
             end
         end
     
@@ -566,11 +593,11 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
 
         if (submarinePos - HRP.Position).Magnitude > 1205 then
             CommF_:InvokeServer("requestEntrance", castlePos)
-            task.wait(0.5)
+            task.wait(1)
 
             if Modules:ValidateReferences() then
                 HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-                task.wait(0.3)
+                task.wait(0.5)
             end
         end
         
@@ -581,7 +608,7 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
         State.currentTween:Play()
         State.currentTween.Completed:Wait()
 
-        task.wait(0.2)
+        task.wait(0.5)
 
         if Modules:ValidateReferences() and (submarinePos - HRP.Position).Magnitude <= 15 then
             local rep = Services.ReplicatedStorage
@@ -592,7 +619,7 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
             self:StopAll(true)
             if rf then
                 rf:InvokeServer("TravelToSubmergedIsland")
-                task.wait(1)
+                task.wait(2)
             end
         end
     
@@ -603,11 +630,11 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
         
         if (tikiPos - HRP.Position).Magnitude > 2000 then
             CommF_:InvokeServer("requestEntrance", castlePos)
-            task.wait(0.5)
+            task.wait(1)
 
             if Modules:ValidateReferences() then
                 HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-                task.wait(0.3)
+                task.wait(0.5)
             end
         elseif (castlePos - HRP.Position).Magnitude < 750 then
             if (Vector3.new(-5097.1318359375, 318.50201416015625, -3178.3984375) - HRP.Position).Magnitude < 100 then
@@ -617,7 +644,7 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
                     end
 
                     HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-                    task.wait(0.3)
+                    task.wait(0.5)
                 end
             else
                 local tikiDist = (Vector3.new(-5097.1318359375, 318.50201416015625, -3178.3984375) - HRP.Position).Magnitude
@@ -629,12 +656,12 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
             end
         end
 
-        task.wait(0.2)
+        task.wait(0.5)
     
     -- Generic portal
     else
         CommF_:InvokeServer("requestEntrance", portal)
-        task.wait(0.5)
+        task.wait(1)
     end
 
     -- Final tween to target
@@ -654,13 +681,13 @@ function Modules.Tween:Boat(targetCFrame, autoManage)
     local vehicleSeat = myShip:FindFirstChild("VehicleSeat")
     if not vehicleSeat then return end
 
-    -- Auto-manage boat hover if requested
     if autoManage ~= false then
         Modules:ManageBoatHover(myShip, true)
     end
 
     local dist = (targetCFrame.Position - vehicleSeat.Position).Magnitude
-    local tweenInfo = self:CalculateTweenInfo(dist, Modules:GetBoatSpeed())
+    -- Use slower speed for boats
+    local tweenInfo = self:CalculateTweenInfo(dist, Config.Tween.defaultBoatTweenSpeed)
 
     local tween = Services.TweenService:Create(vehicleSeat, tweenInfo, {CFrame = targetCFrame})
     tween:Play()
@@ -669,12 +696,10 @@ function Modules.Tween:Boat(targetCFrame, autoManage)
     
     local boatTweenFunc = {}
     function boatTweenFunc:Stop()
-        -- FIX 4: Check if tween is still playing before cancelling
         if tween and tween.PlaybackState == Enum.PlaybackState.Playing then
             tween:Cancel()
         end
         
-        -- Remove from active tweens
         for i = #State.activeTweens, 1, -1 do
             if State.activeTweens[i] == tween then
                 table.remove(State.activeTweens, i)
@@ -687,7 +712,6 @@ function Modules.Tween:Boat(targetCFrame, autoManage)
         end
     end
     
-    -- Auto cleanup on completion
     tween.Completed:Connect(function()
         if autoManage ~= false then
             Modules:ManageBoatHover(myShip, false)
@@ -707,7 +731,7 @@ end
 function Modules.Tween:StopAll(stopMovement)
     State.isTweening = false
     
-    -- FIX 5: Cancel and remove tweens in reverse order to avoid index issues
+    -- Cancel all active tweens
     for i = #State.activeTweens, 1, -1 do
         local tween = State.activeTweens[i]
         if tween and tween.PlaybackState == Enum.PlaybackState.Playing then
@@ -716,10 +740,8 @@ function Modules.Tween:StopAll(stopMovement)
         State.activeTweens[i] = nil
     end
     
-    -- Clear the table
     table.clear(State.activeTweens)
     
-    -- FIX 6: Safely cancel current tween
     if State.currentTween then
         if State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
             pcall(function() State.currentTween:Cancel() end)
@@ -727,11 +749,11 @@ function Modules.Tween:StopAll(stopMovement)
         State.currentTween = nil
     end
 
-    -- FIX 7: Only stop movement if references are valid
     if stopMovement ~= false and Modules:ValidateReferences() then
         pcall(function()
-            HRP.CFrame = HRP.CFrame
             HRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            HRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            HRP.CFrame = HRP.CFrame
         end)
         
         Modules.Hover:Remove()
