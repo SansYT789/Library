@@ -461,7 +461,8 @@ end
 local function getAccurateFruitName(v)
     if not v then return "Fruit [ ??? ]" end
 
-    if isValidFruitName(v.Name) and v.Name ~= "Fruit" then
+    local clean = v.Name:lower():gsub("%s+", "")
+    if isValidFruitName(v.Name) and clean ~= "fruit" then
         return v.Name
     end
 
