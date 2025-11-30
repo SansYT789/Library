@@ -298,6 +298,10 @@ local function getDistance(pos1, pos2)
     return round((pos1 - pos2).Magnitude / 3)
 end
 
+local function isWithinMaxDistance(pos1, pos2)
+    return getDistance(pos1, pos2) <= Config.Esp.General.MaxRenderDistance
+end
+
 function Modules:GetSaveManagerInstance()
     return _G.SaveManagerInstance
 end
@@ -436,9 +440,6 @@ function Modules:UpdatePlayerESP()
     if not isFullUpdate and not isQuickUpdate then return end
     
     local charHeadPos = char.Head.Position
-    local maxDist = Config.Esp.General.MaxRenderDistance
-    local maxDistSq = maxDist * maxDist
-    
     local allPlayers = Services.Players:GetPlayers()
     
     for _, player in ipairs(allPlayers) do
@@ -446,7 +447,7 @@ function Modules:UpdatePlayerESP()
         
         local cacheData = ESPCache.Players[player]
         
-        local targetChar = cacheData and cacheData.character
+        local targetChar = (cacheData and cacheData.character) or player.Character or Services.Workspace.Characters:FindFirstChild(player.Name)
         if not targetChar or not targetChar.Parent then
             targetChar = player.Character or Services.Workspace.Characters:FindFirstChild(player.Name)
             if not targetChar then 
@@ -460,9 +461,9 @@ function Modules:UpdatePlayerESP()
         local head = targetChar:FindFirstChild("Head")
         if not head then continue end
         
-        local distSq = (charHeadPos - head.Position).Magnitude
-        
-        if distSq > maxDistSq then
+        local dist = getDistance(charHeadPos, head.Position)
+
+        if not isWithinMaxDistance(charHeadPos, head.Position) then
             destroyESP(head, "NameEspPlayer")
             ESPCache.Players[player] = nil
             continue
@@ -476,30 +477,44 @@ function Modules:UpdatePlayerESP()
                 lastUpdate = 0,
             }
             ESPCache.Players[player] = cacheData
+        else
+            cacheData.character = targetChar
+            cacheData.humanoid = targetChar:FindFirstChildOfClass("Humanoid")
         end
         
         if isFullUpdate then
             updateOrCreateESP(head, "NameEspPlayer", function(label, isNew)
-                local distance = math.floor(math.sqrt(distSq) / 3)
-                
-                local textParts = {player.Name}
-                
+                local distance = dist
+                local textLines = {}
+
+                local line1 = player.Name
                 if Config.Esp.Players.ShowDistance then
-                    table.insert(textParts, distance .. "M")
+                    line1 = line1 .. "(" .. distance .. "M)"
                 end
                 
                 if Config.Esp.Players.ShowHealth and cacheData.humanoid then
-                    local health = math.floor(cacheData.humanoid.Health * 100 / cacheData.humanoid.MaxHealth)
-                    table.insert(textParts, "HP: " .. health .. "%")
+                    local maxHealth = cacheData.humanoid.MaxHealth
+                    local health = cacheData.humanoid.Health
+                    if maxHealth and maxHealth > 0 then
+                        if health <= 0 then
+                            line1 = line1 .. " | Death!"
+                        else
+                            local healthPercent = math.floor(health * 100 / maxHealth)
+                            line1 = line1 .. " | HP: " .. healthPercent .. "%"
+                        end
+                    else
+                        line1 = line1 .. " | Death!"
+                    end
                 end
+                table.insert(textLines, line1)
                 
                 local isEnemy = Config.Esp.Players.TeamCheck and isEnemyPlayer(player)
-                
                 if isEnemy then
                     if Config.Esp.Players.ShowKen then
                         local kenActive = player:GetAttribute("KenActive")
                         local dodgeLeft = player:GetAttribute("KenDodgesLeft") or 0
-                        table.insert(textParts, (kenActive and "Ken: ON" or "Ken: OFF") .. " | Dodge: " .. dodgeLeft)
+                        local kenLine = (kenActive and "Ken: ON" or "Ken: OFF") .. " | DodgeLeft: " .. dodgeLeft
+                        table.insert(textLines, kenLine)
                     end
                     
                     if Config.Esp.Players.ShowV4 then
@@ -507,15 +522,13 @@ function Modules:UpdatePlayerESP()
                         local raceEnergy = targetChar:FindFirstChild("RaceEnergy")
                         local v4Active = raceTransformed and raceTransformed.Value
                         local v4Ready = raceEnergy and raceEnergy.Value == 1
-                        table.insert(textParts, (v4Active and "V4: ON" or "V4: OFF") .. " | " .. (v4Ready and "Ready" or "Not Ready"))
+                        local v4Line = (v4Active and "V4: ON" or "V4: OFF") .. " | " .. (v4Ready and "Ready" or "Not Ready")
+                        table.insert(textLines, v4Line)
                     end
-                    
-                    label.TextColor3 = Config.Esp.Players.EnemyColor
-                else
-                    label.TextColor3 = Config.Esp.Players.TeamColor
                 end
                 
-                label.Text = table.concat(textParts, "\n")
+                label.TextColor3 = isEnemy and Config.Esp.Players.EnemyColor or Config.Esp.Players.TeamColor
+                label.Text = table.concat(textLines, "\n")
             end)
         end
     end
@@ -549,8 +562,6 @@ function Modules:UpdateChestESP()
     if not char or not char:FindFirstChild("Head") then return end
     
     local charHeadPos = char.Head.Position
-    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
-    
     local chests = Services.CollectionService:GetTagged("_ChestTagged")
     local activeChests = {}
     
@@ -564,16 +575,15 @@ function Modules:UpdateChestESP()
             activeChests[chest] = true
             
             local chestPos = chest:IsA("BasePart") and chest.Position or chest:GetPivot().Position
+            local dist = getDistance(charHeadPos, chestPos)
             
-            local distSq = (charHeadPos - chestPos).Magnitude
-            
-            if distSq > maxDistSq then
+            if not isWithinMaxDistance(charHeadPos, chestPos) then
                 destroyESP(chest, "NameEspChest")
                 return
             end
-
+            
             updateOrCreateESP(chest, "NameEspChest", function(label, isNew)
-                local distance = math.floor(math.sqrt(distSq) / 3)
+                local distance = dist
                 
                 local chestType = chest.Name:match("Chest3") and "Diamond" or
                                  chest.Name:match("Chest2") and "Gold" or
@@ -617,7 +627,6 @@ function Modules:UpdateBerryESP()
     if not char or not char:FindFirstChild("Head") then return end
     
     local charHeadPos = char.Head.Position
-    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
     local filterList = Config.Esp.Berries.FilterList
     local hasFilter = #filterList > 0
     
@@ -690,9 +699,9 @@ function Modules:UpdateBerryESP()
                 if not espTarget then return end
             end
 
-            local distSq = (charHeadPos - espTarget.Position).Magnitude
+            local dist = getDistance(charHeadPos, espTarget.Position)
             
-            if distSq > maxDistSq then
+            if not isWithinMaxDistance(charHeadPos, espTarget.Position) then
                 destroyESP(espTarget, "NameEspBerry")
                 return
             end
@@ -706,7 +715,7 @@ function Modules:UpdateBerryESP()
             }
 
             updateOrCreateESP(espTarget, "NameEspBerry", function(label, isNew)
-                local distance = math.floor(math.sqrt(distSq) / 3)
+                local distance = dist
                 local colorData = Config.Esp.Berries.Colors[berryName]
 
                 label.TextColor3 = colorData[1]
@@ -818,7 +827,6 @@ function Modules:UpdateDevilFruitESP()
     if not char or not char:FindFirstChild("Head") then return end
     
     local charHeadPos = char.Head.Position
-    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
     local showId = Config.Esp.DevilFruits.ShowUnkDevilFruitId
     
     -- Get workspace children once
@@ -840,9 +848,9 @@ function Modules:UpdateDevilFruitESP()
             end
 
             -- Fast distance check
-            local distSq = (charHeadPos - handle.Position).Magnitude
-            
-            if distSq > maxDistSq then
+            local dist = getDistance(charHeadPos, handle.Position)
+
+            if not isWithinMaxDistance(charHeadPos, handle.Position) then
                 destroyESP(handle, "NameEspFruit")
                 FruitCache.Fruits[v] = nil
                 return
@@ -864,7 +872,7 @@ function Modules:UpdateDevilFruitESP()
 
             -- Update ESP
             updateOrCreateESP(handle, "NameEspFruit", function(label, isNew)
-                local distance = math.floor(math.sqrt(distSq) / 3)
+                local distance = dist
                 label.TextColor3 = Config.Esp.DevilFruits.Color
                 label.Text = name .. "\n" .. distance .. "M"
             end)
@@ -1033,7 +1041,6 @@ function Modules:UpdateNPCESP()
     if not char or not char:FindFirstChild("Head") or not npcs then return end
     
     local charHeadPos = char.Head.Position
-    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
     local activeNPCs = {}
 
     -- Single iteration with O(1) lookup
@@ -1042,9 +1049,9 @@ function Modules:UpdateNPCESP()
         if not NPCCache.TargetSet[npc.Name] then continue end
 
         pcall(function()
-            local distSq = (charHeadPos - npc.Position).Magnitude
-            
-            if distSq > maxDistSq then
+            local dist = getDistance(charHeadPos, npc.Position)
+
+            if not isWithinMaxDistance(charHeadPos, npc.Position) then
                 destroyESP(npc, "NameEspNPC")
                 return
             end
@@ -1052,7 +1059,7 @@ function Modules:UpdateNPCESP()
             activeNPCs[npc] = true
 
             updateOrCreateESP(npc, "NameEspNPC", function(label, isNew)
-                local distance = math.floor(math.sqrt(distSq) / 3)
+                local distance = dist
                 label.TextColor3 = Config.Esp.NPCs.Color
                 label.Text = npc.Name .. "\n" .. distance .. "M"
             end)
@@ -1090,7 +1097,6 @@ function Modules:UpdateRealFruitESP()
     if not char or not char:FindFirstChild("Head") then return end
     
     local charHeadPos = char.Head.Position
-    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
     local activeFruits = {}
     
     -- Search in Map folder
@@ -1102,14 +1108,14 @@ function Modules:UpdateRealFruitESP()
             local part = obj:FindFirstChildWhichIsA("BasePart")
             if not part then continue end
             
-            local distSq = (charHeadPos - part.Position).Magnitude
-            if distSq > maxDistSq then continue end
+            local dist = getDistance(charHeadPos, part.Position)
+            if not isWithinMaxDistance(charHeadPos, part.Position) then continue end
             
             activeFruits[obj] = true
             
             pcall(function()
                 updateOrCreateESP(part, "NameEspRealFruit", function(label, isNew)
-                    local distance = math.floor(math.sqrt(distSq) / 3)
+                    local distance = dist
                     local color = Config.Esp.RealFruits.Colors[obj.Name]
                     
                     label.TextColor3 = color or Color3.fromRGB(255, 255, 255)
@@ -1150,7 +1156,6 @@ function Modules:UpdateFlowerESP()
     if not char or not char:FindFirstChild("Head") then return end
     
     local charHeadPos = char.Head.Position
-    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
     local activeFlowers = {}
     
     -- Search in Workspace
@@ -1159,14 +1164,14 @@ function Modules:UpdateFlowerESP()
             local part = obj:FindFirstChildWhichIsA("BasePart")
             if not part then continue end
             
-            local distSq = (charHeadPos - part.Position).Magnitude
-            if distSq > maxDistSq then continue end
+            local dist = getDistance(charHeadPos, part.Position)
+            if not isWithinMaxDistance(charHeadPos, part.Position) then continue end
             
             activeFlowers[obj] = true
             
             pcall(function()
                 updateOrCreateESP(part, "NameEspFlower", function(label, isNew)
-                    local distance = math.floor(math.sqrt(distSq) / 3)
+                    local distance = dist
                     local colorData = Config.Esp.Flowers.Colors[obj.Name]
                     
                     label.TextColor3 = colorData[1]
@@ -1207,8 +1212,8 @@ function Modules:UpdateGearESP()
     if not char or not char:FindFirstChild("Head") then return end
     
     local charHeadPos = char.Head.Position
-    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
     local activeGears = {}
+
     local mirageIsland = Services.Workspace.Map:FindFirstChild("MysticIsland")
     if not mirageIsland then return end
     
@@ -1218,14 +1223,14 @@ function Modules:UpdateGearESP()
             local part = obj:FindFirstChildWhichIsA("BasePart")
             if not part then continue end
             
-            local distSq = (charHeadPos - part.Position).Magnitude
-            if distSq > maxDistSq then continue end
+            local dist = getDistance(charHeadPos, part.Position)
+            if not isWithinMaxDistance(charHeadPos, part.Position) then continue end
             
             activeGears[obj] = true
             
             pcall(function()
                 updateOrCreateESP(part, "NameEspGear", function(label, isNew)
-                    local distance = math.floor(math.sqrt(distSq) / 3)
+                    local distance = dist
                     
                     label.TextColor3 = Config.Esp.Gear.Color
                     label.Text = obj.Name .. "\n" .. distance .. "M"
