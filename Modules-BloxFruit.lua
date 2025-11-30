@@ -1,7 +1,7 @@
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/SansYT789/Library/refs/heads/main/SaveManager.luau"))()
 local Modules = {}
 Modules.__index = Modules
-Modules.Version = "1.0"
+Modules.Version = "1.1"
 
 -- Service caching
 local Services = {
@@ -1735,6 +1735,8 @@ if Config.Safety.preventStuck then
             lastPosition = currentPos
         end)
     end
+
+    startStuckCheck()
 end
 
 -- Configuration management
