@@ -1387,15 +1387,18 @@ function TweenStateManager:Create(tweenId, options)
 end
 
 function TweenStateManager:Get(tweenId)
+    if not tweenId then return nil end
     return State.tweenStates[tweenId]
 end
 
 function TweenStateManager:IsActive(tweenId)
+    if not tweenId then return false end
     local state = State.tweenStates[tweenId]
-    return state and state.active
+    return state and state.active or false
 end
 
 function TweenStateManager:Stop(tweenId, silent)
+    if not tweenId then return end
     local state = State.tweenStates[tweenId]
     if not state then return end
     
@@ -1403,7 +1406,7 @@ function TweenStateManager:Stop(tweenId, silent)
     State.continuousTweens[tweenId] = nil
     
     if not silent and state.stopCallback then
-        task.spawn(state.stopCallback)
+        pcall(state.stopCallback)
     end
 end
 
