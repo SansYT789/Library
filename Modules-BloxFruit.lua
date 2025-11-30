@@ -264,6 +264,10 @@ local function isWithinRenderDistance(pos1, pos2)
     return (pos1 - pos2).Magnitude <= Config.Esp.General.MaxRenderDistance
 end
 
+function Modules:GetSaveManagerInstance()
+    return _G.SaveManagerInstance
+end
+
 function Modules:SafePcall(func, ...)
     local success, result = pcall(func, ...)
     if not success then
@@ -763,9 +767,19 @@ function Modules:EnableESPCategory(category)
     end
 end
 
+local function cleanupESPForCategory(category)
+    for parent, data in pairs(Cache.ESPObjects) do
+        if data.billboard and data.billboard.Name:find(category) then
+            data.billboard:Destroy()
+            Cache.ESPObjects[parent] = nil
+        end
+    end
+end
+
 function Modules:DisableESPCategory(category)
     if Config.Esp[category] then
         Config.Esp[category].Enabled = false
+        cleanupESPForCategory(category)
     end
 end
 
@@ -1131,6 +1145,32 @@ function Modules.Portal:GetClosest(targetCFrame)
     return nil
 end
 
+local boatHoverConnection
+local function startBoatHoverMonitor()
+    if boatHoverConnection then return end
+    
+    boatHoverConnection = Services.RunService.Heartbeat:Connect(function()
+        if not State.isTweening and not Modules.CheckInMyBoat() then
+            -- Stop monitoring if not needed
+            if boatHoverConnection then
+                boatHoverConnection:Disconnect()
+                boatHoverConnection = nil
+            end
+            
+            -- Clean up all boat hovers
+            for boat, _ in pairs(State.boatHoverClips) do
+                Modules:ManageBoatHover(boat, false)
+            end
+            return
+        end
+        
+        local myBoat = Modules.CheckMyBoat()
+        if myBoat then
+            Modules:ManageBoatHover(myBoat, true)
+        end
+    end)
+end
+
 Modules.Tween = {}
 function Modules.Tween:CalculateTweenInfo(distance, customSpeed)
     local speed = customSpeed or Modules:GetTweenSpeed()
@@ -1178,6 +1218,7 @@ function Modules.Tween:ToTarget(targetCFrame, options)
     end
 
     State.isTweening = true
+    startBoatHoverMonitor()
 
     if Humanoid.Sit then
         Humanoid.Sit = false
@@ -1475,6 +1516,8 @@ function Modules.Tween:Boat(targetCFrame, autoManage)
 
     local vehicleSeat = myShip:FindFirstChild("VehicleSeat")
     if not vehicleSeat then return end
+    
+    startBoatHoverMonitor()
 
     if autoManage ~= false then
         Modules:ManageBoatHover(myShip, true)
@@ -1556,6 +1599,21 @@ function Modules.Tween:StopAll(stopMovement)
     end
 end
 
+local deathConnection
+local function setupDeathHandler()
+    if deathConnection then
+        deathConnection:Disconnect()
+    end
+    
+    if Humanoid then
+        deathConnection = Humanoid.Died:Connect(function()
+            if Config.Safety.autoStopOnDeath then
+                Modules.Tween:StopAll(true)
+            end
+        end)
+    end
+end
+
 -- Initialization
 local function InitializeReferences()
     local success = Modules:SafePcall(function()
@@ -1572,6 +1630,8 @@ function Modules:Initialize()
     if not InitializeReferences() then return false end
 
     State.isInitialized = true
+    setupDeathHandler()
+
     _G.ModulesInitialized = true
     _G.ModulesVersion = Modules.Version
     
@@ -1587,6 +1647,8 @@ Player.CharacterAdded:Connect(function(newChar)
     State.tweenQueue = {}
     State.tweenStates = {}
     State.continuousTweens = {}
+    State.validationCache = false
+    State.lastValidation = 0
     Character = newChar
     
     Modules.Hover:Remove()
@@ -1600,15 +1662,10 @@ Player.CharacterAdded:Connect(function(newChar)
     end
 end)
 
-function Modules:InitCode(settings)
-    local manager = SaveManager.new(Player, settings)
-    _G.SaveManagerInstance = manager
-    
-    if not manager then 
-        warn("[SaveManager] Save mode is currently not working, the script may not save settings anymore.") 
-    end
-    
-    return manager
+function Modules:InitSaveManager(mango)
+    _G.SaveManagerInstance = mango
+    if not mango then warn("[SaveManager] Save mode is currently not working, the modules may not save settings anymore.") end
+    return mango
 end
 
 function Modules:ToPos(input, options)
@@ -1637,70 +1694,47 @@ function Modules:IsInLoop()
     return LoopDetector:IsInLoop()
 end
 
-task.spawn(function()
-    while task.wait(Config.Performance.updateInterval) do
-        Modules:SafePcall(function()
-            local myBoat = Modules.CheckMyBoat()
-            
-            if myBoat then
-                local shouldManage = State.isTweening or Modules.CheckInMyBoat()
-                
-                if shouldManage then
-                    Modules:ManageBoatHover(myBoat, true)
-                else
-                    Modules:ManageBoatHover(myBoat, false)
-                end
-            end
-        end)
-    end
-end)
-
 if Config.Safety.preventStuck then
     local lastPosition = nil
     local stuckTime = 0
+    local stuckCheckConnection
     
-    task.spawn(function()
-        while task.wait(Config.Safety.collisionCheckInterval) do
-            Modules:SafePcall(function()
-                if not State.isTweening or not Modules:ValidateReferences() then 
-                    lastPosition = nil
-                    stuckTime = 0
-                    return 
+    local function startStuckCheck()
+        if stuckCheckConnection then return end
+        
+        stuckCheckConnection = Services.RunService.Heartbeat:Connect(function()
+            if not State.isTweening or not Modules:ValidateReferences() then 
+                lastPosition = nil
+                stuckTime = 0
+                
+                if stuckCheckConnection then
+                    stuckCheckConnection:Disconnect()
+                    stuckCheckConnection = nil
                 end
+                return 
+            end
+            
+            local currentPos = HRP.Position
+            
+            if lastPosition then
+                local moved = (currentPos - lastPosition).Magnitude
                 
-                local currentPos = HRP.Position
-                
-                if lastPosition then
-                    local moved = (currentPos - lastPosition).Magnitude
+                if moved < 2 then
+                    stuckTime = stuckTime + (1/60) -- Heartbeat delta
                     
-                    -- If moved less than 2 studs in 0.2 seconds while tweening
-                    if moved < 2 then
-                        stuckTime = stuckTime + Config.Safety.collisionCheckInterval
-                        
-                        -- If stuck for more than 1 second, try to unstuck
-                        if stuckTime > 1 then
-                            -- Teleport slightly up and forward
-                            local lookVector = HRP.CFrame.LookVector
-                            HRP.CFrame = HRP.CFrame + Vector3.new(0, 5, 0) + (lookVector * 10)
-                            stuckTime = 0
-                        end
-                    else
+                    if stuckTime > 1 then
+                        local lookVector = HRP.CFrame.LookVector
+                        HRP.CFrame = HRP.CFrame + Vector3.new(0, 5, 0) + (lookVector * 10)
                         stuckTime = 0
                     end
+                else
+                    stuckTime = 0
                 end
-                
-                lastPosition = currentPos
-            end)
-        end
-    end)
-end
-
-if Humanoid then
-    Humanoid.Died:Connect(function()
-        if Config.Safety.autoStopOnDeath then
-            Modules.Tween:StopAll(true)
-        end
-    end)
+            end
+            
+            lastPosition = currentPos
+        end)
+    end
 end
 
 -- Configuration management
