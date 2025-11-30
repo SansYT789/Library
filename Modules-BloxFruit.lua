@@ -1312,14 +1312,6 @@ function Modules:StartESP()
     print("✓ ESP Started")
 end
 
-function Modules:SetESPPriority(category, interval)
-    if ESPManager.UpdateIntervals[category] then
-        ESPManager.UpdateIntervals[category] = math.max(0.1, interval)
-        return true
-    end
-    return false
-end
-
 function Modules:StopESP()
     if self.UpdateConnection then
         self.UpdateConnection:Disconnect()
@@ -1358,19 +1350,9 @@ function Modules:EnableESPCategory(category)
     end
 end
 
-local function cleanupESPForCategory(category)
-    for parent, data in pairs(Cache.ESPObjects) do
-        if data.billboard and data.billboard.Name:find(category) then
-            data.billboard:Destroy()
-            Cache.ESPObjects[parent] = nil
-        end
-    end
-end
-
 function Modules:DisableESPCategory(category)
     if Config.Esp[category] then
         Config.Esp[category].Enabled = false
-        cleanupESPForCategory(category)
     end
 end
 
@@ -1380,7 +1362,6 @@ function Modules:ClearAllESP()
             data.billboard:Destroy()
         end
     end
-    Cache.ESPObjects = {}
 end
 
 local TweenStateManager = {}
