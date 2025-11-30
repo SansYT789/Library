@@ -460,7 +460,7 @@ function Modules:UpdatePlayerESP()
         local head = targetChar:FindFirstChild("Head")
         if not head then continue end
         
-        local distSq = (charHeadPos - head.Position).squaredMagnitude
+        local distSq = (charHeadPos - head.Position).Magnitude
         
         if distSq > maxDistSq then
             destroyESP(head, "NameEspPlayer")
@@ -565,7 +565,7 @@ function Modules:UpdateChestESP()
             
             local chestPos = chest:IsA("BasePart") and chest.Position or chest:GetPivot().Position
             
-            local distSq = (charHeadPos - chestPos).squaredMagnitude
+            local distSq = (charHeadPos - chestPos).Magnitude
             
             if distSq > maxDistSq then
                 destroyESP(chest, "NameEspChest")
@@ -690,7 +690,7 @@ function Modules:UpdateBerryESP()
                 if not espTarget then return end
             end
 
-            local distSq = (charHeadPos - espTarget.Position).squaredMagnitude
+            local distSq = (charHeadPos - espTarget.Position).Magnitude
             
             if distSq > maxDistSq then
                 destroyESP(espTarget, "NameEspBerry")
@@ -840,7 +840,7 @@ function Modules:UpdateDevilFruitESP()
             end
 
             -- Fast distance check
-            local distSq = (charHeadPos - handle.Position).squaredMagnitude
+            local distSq = (charHeadPos - handle.Position).Magnitude
             
             if distSq > maxDistSq then
                 destroyESP(handle, "NameEspFruit")
@@ -1042,7 +1042,7 @@ function Modules:UpdateNPCESP()
         if not NPCCache.TargetSet[npc.Name] then continue end
 
         pcall(function()
-            local distSq = (charHeadPos - npc.Position).squaredMagnitude
+            local distSq = (charHeadPos - npc.Position).Magnitude
             
             if distSq > maxDistSq then
                 destroyESP(npc, "NameEspNPC")
@@ -1102,7 +1102,7 @@ function Modules:UpdateRealFruitESP()
             local part = obj:FindFirstChildWhichIsA("BasePart")
             if not part then continue end
             
-            local distSq = (charHeadPos - part.Position).squaredMagnitude
+            local distSq = (charHeadPos - part.Position).Magnitude
             if distSq > maxDistSq then continue end
             
             activeFruits[obj] = true
@@ -1159,7 +1159,7 @@ function Modules:UpdateFlowerESP()
             local part = obj:FindFirstChildWhichIsA("BasePart")
             if not part then continue end
             
-            local distSq = (charHeadPos - part.Position).squaredMagnitude
+            local distSq = (charHeadPos - part.Position).Magnitude
             if distSq > maxDistSq then continue end
             
             activeFlowers[obj] = true
@@ -1218,7 +1218,7 @@ function Modules:UpdateGearESP()
             local part = obj:FindFirstChildWhichIsA("BasePart")
             if not part then continue end
             
-            local distSq = (charHeadPos - part.Position).squaredMagnitude
+            local distSq = (charHeadPos - part.Position).Magnitude
             if distSq > maxDistSq then continue end
             
             activeGears[obj] = true
