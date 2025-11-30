@@ -1695,6 +1695,65 @@ if Config.Safety.preventStuck then
     end)
 end
 
+if Humanoid then
+    Humanoid.Died:Connect(function()
+        if Config.Safety.autoStopOnDeath then
+            Modules.Tween:StopAll(true)
+        end
+    end)
+end
+
+-- Configuration management
+function Modules:UpdateConfig(newConfig)
+    if type(newConfig) ~= "table" then return end
+
+    for key, value in pairs(newConfig) do
+        if key == "Tween" and type(value) == "table" then
+            for k, v in pairs(value) do
+                Config.Tween[k] = v
+            end
+        elseif key == "Performance" and type(value) == "table" then
+            for k, v in pairs(value) do
+                Config.Performance[k] = v
+            end
+        elseif key == "Safety" and type(value) == "table" then
+            for k, v in pairs(value) do
+                Config.Safety[k] = v
+            end
+        elseif Config[key] ~= nil then
+            Config[key] = value
+        end
+    end
+end
+
+function Modules:GetConfig(key)
+    if key then
+        if Config.Tween[key] then
+            return Config.Tween[key]
+        elseif Config.Performance[key] then
+            return Config.Performance[key]
+        elseif Config.Safety[key] then
+            return Config.Safety[key]
+        else
+            return Config[key]
+        end
+    else
+        -- Return deep copy
+        local copy = {}
+        for k, v in pairs(Config) do
+            if type(v) == "table" then
+                copy[k] = {}
+                for k2, v2 in pairs(v) do
+                    copy[k][k2] = v2
+                end
+            else
+                copy[k] = v
+            end
+        end
+        return copy
+    end
+end
+
 -- Initialize on load
 local initSuccess = Modules:Initialize()
 if not initSuccess then
