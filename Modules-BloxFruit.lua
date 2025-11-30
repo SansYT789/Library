@@ -1,7 +1,7 @@
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/SansYT789/Library/refs/heads/main/SaveManager.luau"))()
 local Modules = {}
 Modules.__index = Modules
-Modules.Version = "1.1"
+Modules.Version = "1.2"
 
 -- Service caching
 local Services = {
@@ -16,30 +16,22 @@ local Services = {
 
 -- Configuration
 local Config = {
-	Tween = {
+    Tween = {
         defaultTweenSpeed = 300,
         defaultBoatTweenSpeed = 150,
-        adaptiveSpeed = false,
-        smoothTransition = true,
         instantTeleportDistance = 300,
         maxTweenSpeed = 350,
         velocityCap = 150,
-        positionUpdateRate = 0.05
     },
 
     Performance = {
         updateInterval = 0.1,
         validationCacheTime = 0.5,
-        maxConcurrentTweens = 3,
-        useAdaptiveQuality = true
     },
     
     Safety = {
         autoStopOnDeath = true,
-        preventStuck = true,
-        collisionCheckInterval = 0.2,
         maxVelocityMagnitude = 150,
-        smoothingFactor = 0.3
     },
 
     Esp = {
@@ -168,28 +160,16 @@ end
 
 -- State management
 local State = {
-	currentTween = nil,
+    currentTween = nil,
     activeTweens = {},
     isInitialized = false,
-    tweenStates = {},
-    continuousTweens = {},
     isTweening = false,
     lastValidation = 0,
     validationCache = true,
-    tweenQueue = {},
     hoverClip = nil,
     boatHoverClips = {},
     tweenCooldown = 0,
     boatOriginalCollision = {},
-    loopDetection = {
-        active = {},
-        history = {}
-    },
-    performance = {
-    	tweenCount = 0,
-        avgTweenTime = 0,
-        lastFrameTime = tick()
-    }
 }
 
 -- Remote setup
@@ -201,10 +181,68 @@ if not CommF_ then
 end
 
 -- Cache
-local Cache = {
-    ESPObjects = {},
+local ESPCache = {
+    Players = {},
+    LastFullUpdate = 0,
+    UpdateInterval = 0.5,
+    QuickUpdateInterval = 0.1,
+    LastQuickUpdate = 0
+}
+
+local ChestCache = {
+    Chests = {},
     LastUpdate = 0,
-    PlayerCharacters = {},
+    UpdateInterval = 0.3
+}
+
+local BerryCache = {
+    Bushes = {},
+    LastUpdate = 0,
+    UpdateInterval = 0.4,
+    AttributeCache = {}
+}
+
+local FruitCache = {
+    Fruits = {},
+    NameCache = {},
+    LastUpdate = 0,
+    UpdateInterval = 0.5
+}
+
+local IslandCache = {
+    LocationsFolder = nil,
+    Islands = {},
+    ExcludeSet = {},
+    EventIslandSet = {},
+    LastUpdate = 0,
+    UpdateInterval = 1.0,
+    LastStructureCheck = 0,
+    StructureCheckInterval = 5.0
+}
+
+local NPCCache = {
+    TrackedNPCs = {},
+    TargetSet = {},
+    LastUpdate = 0,
+    UpdateInterval = 0.8
+}
+
+local RealFruitCache = {
+    Fruits = {},
+    LastUpdate = 0,
+    UpdateInterval = 0.5
+}
+
+local FlowerCache = {
+    Flowers = {},
+    LastUpdate = 0,
+    UpdateInterval = 0.6
+}
+
+local GearCache = {
+    Gears = {},
+    LastUpdate = 0,
+    UpdateInterval = 0.7
 }
 
 -- Devil Fruit IDs
@@ -260,10 +298,6 @@ local function getDistance(pos1, pos2)
     return round((pos1 - pos2).Magnitude / 3)
 end
 
-local function isWithinRenderDistance(pos1, pos2)
-    return (pos1 - pos2).Magnitude <= Config.Esp.General.MaxRenderDistance
-end
-
 function Modules:GetSaveManagerInstance()
     return _G.SaveManagerInstance
 end
@@ -281,21 +315,38 @@ function Modules:IsAlive(char)
     if not char or not char.Parent then return false end
     
     local h = char:FindFirstChild("Humanoid")
-    return h and h.Health > 0 and h.Parent ~= nil
+    if not h or not h.Parent or h.Health <= 0 then return false end
+    
+    return true
 end
 
 function Modules:ValidateReferences()
-    local now = tick()
-    if now - State.lastValidation < Config.Performance.validationCacheTime then
-        return State.validationCache
+    if State.validationCache then
+        local now = tick()
+        if (now - State.lastValidation) < Config.Performance.validationCacheTime then
+            return true
+        end
     end
     
+    local now = tick()
     State.lastValidation = now
-    State.validationCache = Character and Character.Parent
-        and HRP and HRP.Parent
-        and Humanoid and Humanoid.Parent
-        and Humanoid.Health > 0
     
+    if not Character or not Character.Parent then
+        State.validationCache = false
+        return false
+    end
+    
+    if not HRP or not HRP.Parent then
+        State.validationCache = false
+        return false
+    end
+    
+    if not Humanoid or not Humanoid.Parent then
+        State.validationCache = false
+        return false
+    end
+    
+    State.validationCache = Humanoid.Health > 0
     return State.validationCache
 end
 
@@ -331,7 +382,6 @@ local function destroyESP(parent, espName)
     local existing = parent:FindFirstChild(espName)
     if existing then
         existing:Destroy()
-        Cache.ESPObjects[parent] = nil
     end
 end
 
@@ -342,7 +392,6 @@ local function updateOrCreateESP(parent, espName, updateFunc)
 
     if not existingESP then
         local bill, label = createESPBillboard(parent, espName)
-        Cache.ESPObjects[parent] = {billboard = bill, label = label}
         updateFunc(label, true)
     else
         local label = existingESP:FindFirstChild("TextLabel")
@@ -365,6 +414,319 @@ local function isEnemyPlayer(plr)
     return true
 end
 
+-- ESP Update Functions
+function Modules:UpdatePlayerESP()
+    if not Config.Esp.Players.Enabled then
+        for player, data in pairs(ESPCache.Players) do
+            if data.head and data.head:FindFirstChild("NameEspPlayer") then
+                data.head.NameEspPlayer:Destroy()
+            end
+        end
+        ESPCache.Players = {}
+        return
+    end
+
+    local char = getPlayerCharacter()
+    if not char or not char:FindFirstChild("Head") then return end
+    
+    local currentTime = tick()
+    local isFullUpdate = (currentTime - ESPCache.LastFullUpdate) >= ESPCache.UpdateInterval
+    local isQuickUpdate = (currentTime - ESPCache.LastQuickUpdate) >= ESPCache.QuickUpdateInterval
+    
+    if not isFullUpdate and not isQuickUpdate then return end
+    
+    local charHeadPos = char.Head.Position
+    local maxDist = Config.Esp.General.MaxRenderDistance
+    local maxDistSq = maxDist * maxDist
+    
+    local allPlayers = Services.Players:GetPlayers()
+    
+    for _, player in ipairs(allPlayers) do
+        if player == Player then continue end
+        
+        local cacheData = ESPCache.Players[player]
+        
+        local targetChar = cacheData and cacheData.character
+        if not targetChar or not targetChar.Parent then
+            targetChar = player.Character or Services.Workspace.Characters:FindFirstChild(player.Name)
+            if not targetChar then 
+                if cacheData then
+                    ESPCache.Players[player] = nil
+                end
+                continue 
+            end
+        end
+        
+        local head = targetChar:FindFirstChild("Head")
+        if not head then continue end
+        
+        local distSq = (charHeadPos - head.Position).squaredMagnitude
+        
+        if distSq > maxDistSq then
+            destroyESP(head, "NameEspPlayer")
+            ESPCache.Players[player] = nil
+            continue
+        end
+        
+        if not cacheData then
+            cacheData = {
+                character = targetChar,
+                head = head,
+                humanoid = targetChar:FindFirstChildOfClass("Humanoid"),
+                lastUpdate = 0,
+            }
+            ESPCache.Players[player] = cacheData
+        end
+        
+        if isFullUpdate then
+            updateOrCreateESP(head, "NameEspPlayer", function(label, isNew)
+                local distance = math.floor(math.sqrt(distSq) / 3)
+                
+                local textParts = {player.Name}
+                
+                if Config.Esp.Players.ShowDistance then
+                    table.insert(textParts, distance .. "M")
+                end
+                
+                if Config.Esp.Players.ShowHealth and cacheData.humanoid then
+                    local health = math.floor(cacheData.humanoid.Health * 100 / cacheData.humanoid.MaxHealth)
+                    table.insert(textParts, "HP: " .. health .. "%")
+                end
+                
+                local isEnemy = Config.Esp.Players.TeamCheck and isEnemyPlayer(player)
+                
+                if isEnemy then
+                    if Config.Esp.Players.ShowKen then
+                        local kenActive = player:GetAttribute("KenActive")
+                        local dodgeLeft = player:GetAttribute("KenDodgesLeft") or 0
+                        table.insert(textParts, (kenActive and "Ken: ON" or "Ken: OFF") .. " | Dodge: " .. dodgeLeft)
+                    end
+                    
+                    if Config.Esp.Players.ShowV4 then
+                        local raceTransformed = targetChar:FindFirstChild("RaceTransformed")
+                        local raceEnergy = targetChar:FindFirstChild("RaceEnergy")
+                        local v4Active = raceTransformed and raceTransformed.Value
+                        local v4Ready = raceEnergy and raceEnergy.Value == 1
+                        table.insert(textParts, (v4Active and "V4: ON" or "V4: OFF") .. " | " .. (v4Ready and "Ready" or "Not Ready"))
+                    end
+                    
+                    label.TextColor3 = Config.Esp.Players.EnemyColor
+                else
+                    label.TextColor3 = Config.Esp.Players.TeamColor
+                end
+                
+                label.Text = table.concat(textParts, "\n")
+            end)
+        end
+    end
+    
+    if isFullUpdate then
+        ESPCache.LastFullUpdate = currentTime
+    end
+    if isQuickUpdate then
+        ESPCache.LastQuickUpdate = currentTime
+    end
+end
+
+function Modules:UpdateChestESP()
+    if not Config.Esp.Chests.Enabled then
+        for chest, _ in pairs(ChestCache.Chests) do
+            pcall(function() 
+                destroyESP(chest, "NameEspChest") 
+            end)
+        end
+        ChestCache.Chests = {}
+        return
+    end
+
+    local currentTime = tick()
+    if (currentTime - ChestCache.LastUpdate) < ChestCache.UpdateInterval then
+        return
+    end
+    ChestCache.LastUpdate = currentTime
+
+    local char = getPlayerCharacter()
+    if not char or not char:FindFirstChild("Head") then return end
+    
+    local charHeadPos = char.Head.Position
+    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
+    
+    local chests = Services.CollectionService:GetTagged("_ChestTagged")
+    local activeChests = {}
+    
+    for _, chest in ipairs(chests) do
+        pcall(function()
+            if chest:GetAttribute("IsDisabled") then
+                destroyESP(chest, "NameEspChest")
+                return
+            end
+            
+            activeChests[chest] = true
+            
+            local chestPos = chest:IsA("BasePart") and chest.Position or chest:GetPivot().Position
+            
+            local distSq = (charHeadPos - chestPos).squaredMagnitude
+            
+            if distSq > maxDistSq then
+                destroyESP(chest, "NameEspChest")
+                return
+            end
+
+            updateOrCreateESP(chest, "NameEspChest", function(label, isNew)
+                local distance = math.floor(math.sqrt(distSq) / 3)
+                
+                local chestType = chest.Name:match("Chest3") and "Diamond" or
+                                 chest.Name:match("Chest2") and "Gold" or
+                                 chest.Name:match("Chest1") and "Silver" or "Default"
+
+                label.TextColor3 = Config.Esp.Chests.Colors[chestType]
+                label.Text = chest.Name:gsub("Label", "") .. "\n" .. distance .. "M"
+            end)
+        end)
+    end
+    
+    for chest, _ in pairs(ChestCache.Chests) do
+        if not activeChests[chest] then
+            destroyESP(chest, "NameEspChest")
+            ChestCache.Chests[chest] = nil
+        end
+    end
+    
+    ChestCache.Chests = activeChests
+end
+
+function Modules:UpdateBerryESP()
+    if not Config.Esp.Berries.Enabled then
+        for bush, data in pairs(BerryCache.Bushes) do
+            if data and data.espTarget then
+                destroyESP(data.espTarget, "NameEspBerry")
+            end
+        end
+        BerryCache.Bushes = {}
+        BerryCache.AttributeCache = {}
+        return
+    end
+
+    local currentTime = tick()
+    if (currentTime - BerryCache.LastUpdate) < BerryCache.UpdateInterval then
+        return
+    end
+    BerryCache.LastUpdate = currentTime
+
+    local char = getPlayerCharacter()
+    if not char or not char:FindFirstChild("Head") then return end
+    
+    local charHeadPos = char.Head.Position
+    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
+    local filterList = Config.Esp.Berries.FilterList
+    local hasFilter = #filterList > 0
+    
+    local filterLookup = {}
+    if hasFilter then
+        for _, name in ipairs(filterList) do
+            filterLookup[name] = true
+        end
+    end
+    
+    local berryBushes = Services.CollectionService:GetTagged("BerryBush")
+    local activeBushes = {}
+    
+    for _, bush in ipairs(berryBushes) do
+        pcall(function()
+            local bushModel = bush.Parent
+            if not bushModel or not bushModel:IsA("Model") then return end
+
+            local cachedData = BerryCache.Bushes[bush]
+            local berriesFolder = cachedData and cachedData.berriesFolder
+            
+            if not berriesFolder or not berriesFolder.Parent then
+                berriesFolder = bushModel:FindFirstChild("Berries")
+            end
+            
+            if not berriesFolder then
+                destroyESP(bush, "NameEspBerry")
+                return
+            end
+            
+            local berryCount = cachedData and cachedData.berryCount or #berriesFolder:GetChildren()
+            
+            if berryCount == 0 then
+                destroyESP(bush, "NameEspBerry")
+                BerryCache.Bushes[bush] = nil
+                return
+            end
+            
+            local berryName = BerryCache.AttributeCache[bush]
+            
+            if not berryName then
+                local attributes = bush:GetAttributes()
+                for key, value in pairs(attributes) do
+                    if Config.Esp.Berries.Colors[key] then
+                        berryName = key
+                        BerryCache.AttributeCache[bush] = key
+                        break
+                    elseif Config.Esp.Berries.Colors[value] then
+                        berryName = value
+                        BerryCache.AttributeCache[bush] = value
+                        break
+                    end
+                end
+            end
+
+            if not berryName or (hasFilter and not filterLookup[berryName]) then
+                destroyESP(bush, "NameEspBerry")
+                return
+            end
+
+            local espTarget = cachedData and cachedData.espTarget
+            
+            if not espTarget or not espTarget.Parent then
+                local firstBerry = berriesFolder:GetChildren()[1]
+                if not firstBerry then return end
+                
+                espTarget = firstBerry:IsA("BasePart") and firstBerry 
+                    or firstBerry:FindFirstChildWhichIsA("BasePart")
+                
+                if not espTarget then return end
+            end
+
+            local distSq = (charHeadPos - espTarget.Position).squaredMagnitude
+            
+            if distSq > maxDistSq then
+                destroyESP(espTarget, "NameEspBerry")
+                return
+            end
+
+            activeBushes[bush] = true
+            BerryCache.Bushes[bush] = {
+                berriesFolder = berriesFolder,
+                espTarget = espTarget,
+                berryName = berryName,
+                berryCount = berryCount
+            }
+
+            updateOrCreateESP(espTarget, "NameEspBerry", function(label, isNew)
+                local distance = math.floor(math.sqrt(distSq) / 3)
+                local colorData = Config.Esp.Berries.Colors[berryName]
+
+                label.TextColor3 = colorData[1]
+                label.Text = string.format("[%s]\n%dM", colorData[2], distance)
+            end)
+        end)
+    end
+    
+    for bush, _ in pairs(BerryCache.Bushes) do
+        if not activeBushes[bush] then
+            local data = BerryCache.Bushes[bush]
+            if data and data.espTarget then
+                destroyESP(data.espTarget, "NameEspBerry")
+            end
+            BerryCache.Bushes[bush] = nil
+            BerryCache.AttributeCache[bush] = nil
+        end
+    end
+end
+
 -- Devil Fruit Helpers
 local function isValidFruitName(name)
     return type(name) == "string" and string.find(string.lower(name), "fruit")
@@ -376,285 +738,238 @@ local function normalizeIdValue(idValue)
     return assetId and ("rbxassetid://" .. assetId) or nil
 end
 
-local function getAccurateFruitName(v)
+local function getAccurateFruitNameCached(v)
+    local cached = FruitCache.NameCache[v]
+    if cached then return cached end
+    
     if not v then return "Fruit [ ??? ]" end
 
     local clean = v.Name:lower():gsub("%s+", "")
-    if isValidFruitName(v.Name) and clean ~= "fruit" then return v.Name end
+    if isValidFruitName(v.Name) and clean ~= "fruit" then 
+        FruitCache.NameCache[v] = v.Name
+        return v.Name 
+    end
 
-    local fruitModel = v:FindFirstChild("Fruit") or v:WaitForChild("Fruit", 3)
-    if not fruitModel then return v.Name .. " [ ??? ]" end
+    local fruitModel = v:FindFirstChild("Fruit")
+    if not fruitModel then 
+        local fallback = v.Name .. " [ ??? ]"
+        FruitCache.NameCache[v] = fallback
+        return fallback
+    end
 
-    local idleObj = fruitModel:FindFirstChildWhichIsA("Animation") or fruitModel:FindFirstChildWhichIsA("MeshPart") or fruitModel:FindFirstChild("Fruit")
-    if not idleObj then return v.Name .. " [ ??? ]" end
+    local idleObj = fruitModel:FindFirstChild("Idle")
+        or fruitModel:FindFirstChildWhichIsA("Animation")
+        or fruitModel:FindFirstChildWhichIsA("MeshPart")
+        or fruitModel:FindFirstChild("Fruit")
+    
+    if not idleObj then 
+        local fallback = v.Name .. " [ ??? ]"
+        FruitCache.NameCache[v] = fallback
+        return fallback
+    end
 
-    local assetId = nil
+    local assetId
     if idleObj:IsA("Animation") then
         assetId = idleObj.AnimationId
     elseif idleObj:IsA("MeshPart") then
         assetId = idleObj.MeshId
     end
-    if not assetId or assetId == "" then return v.Name .. " [ ??? ]" end
+    
+    if not assetId or assetId == "" then 
+        local fallback = v.Name .. " [ ??? ]"
+        FruitCache.NameCache[v] = fallback
+        return fallback
+    end
 
     local normalized = normalizeIdValue(assetId)
-    if not normalized then return v.Name .. " [ ??? ]" end
+    if not normalized then 
+        local fallback = v.Name .. " [ ??? ]"
+        FruitCache.NameCache[v] = fallback
+        return fallback
+    end
 
     local nameId = realFruitNameIds[normalized]
-    if nameId then return v.Name .. "[ " .. nameId .. " ]" end
-
-    return "Fruit [ ??? ]"
-end
-
--- ESP Update Functions
-function Modules:UpdatePlayerESP()
-    if not Config.Esp.Players.Enabled then
-        for player, char in pairs(Cache.PlayerCharacters) do
-            if char and char:FindFirstChild("Head") then
-                destroyESP(char.Head, "NameEspPlayer")
-            end
-        end
-        Cache.PlayerCharacters = {}
-        return
-    end
-
-    local char = getPlayerCharacter()
-    if not char or not char:FindFirstChild("Head") then return end
-
-    for _, player in ipairs(Services.Players:GetPlayers()) do
-        if player == Player then continue end
-
-        pcall(function()
-            local targetChar = player.Character or Services.Workspace.Characters:FindFirstChild(player.Name)
-            if not targetChar or not targetChar:FindFirstChild("Head") then return end
-
-            Cache.PlayerCharacters[player] = targetChar
-            local head = targetChar.Head
-
-            if not isWithinRenderDistance(char.Head.Position, head.Position) then
-                destroyESP(head, "NameEspPlayer")
-                return
-            end
-
-            updateOrCreateESP(head, "NameEspPlayer", function(label, isNew)
-                local distance = getDistance(char.Head.Position, head.Position)
-                local humanoid = targetChar:FindFirstChildOfClass("Humanoid")
-                local health = humanoid and round(humanoid.Health * 100 / humanoid.MaxHealth) or 0
-
-                local text = player.Name
-                if Config.Esp.Players.ShowDistance then
-                    text = text .. " | " .. distance .. "M"
-                end
-
-                if Config.Esp.Players.ShowHealth then
-                    text = text .. "\nHealth: " .. health .. "%"
-                end
-
-                if Config.Esp.Players.TeamCheck and isEnemyPlayer(player) then
-                    if Config.Esp.Players.ShowKen then
-                        local kenActive = player:GetAttribute("KenActive") and "Ken: ON" or "Ken: OFF"
-                        local dodgeLeft = player:GetAttribute("KenDodgesLeft") or 0
-                        text = text .. "\n" .. kenActive .. " | Dodge: " .. dodgeLeft
-                    end
-
-                    if Config.Esp.Players.ShowV4 then
-                        local v4Active = (targetChar:FindFirstChild("RaceTransformed") and targetChar.RaceTransformed.Value) and "V4: ON" or "V4: OFF"
-                        local v4Ready = (targetChar:FindFirstChild("RaceEnergy") and targetChar.RaceEnergy.Value == 1) and "Ready" or "Not Ready"
-                        text = text .. "\n" .. v4Active .. " | " .. v4Ready
-                    end
-
-                    label.TextColor3 = Config.Esp.Players.EnemyColor
-                else
-                    label.TextColor3 = Config.Esp.Players.TeamColor
-                end
-
-                label.Text = text
-            end)
-        end)
-    end
-end
-
-function Modules:UpdateChestESP()
-    if not Config.Esp.Chests.Enabled then
-        local chests = Services.CollectionService:GetTagged("_ChestTagged")
-        for _, chest in ipairs(chests) do
-            pcall(function() destroyESP(chest, "NameEspChest") end)
-        end
-        return
-    end
-
-    local char = getPlayerCharacter()
-    if not char or not char:FindFirstChild("Head") then return end
-
-    local chests = Services.CollectionService:GetTagged("_ChestTagged")
-    for _, chest in ipairs(chests) do
-        pcall(function()
-            if chest:GetAttribute("IsDisabled") then
-                destroyESP(chest, "NameEspChest")
-                return
-            end
-
-            local chestPos = chest:IsA("BasePart") and chest.Position or chest:GetPivot().Position
-
-            if not isWithinRenderDistance(char.Head.Position, chestPos) then
-                destroyESP(chest, "NameEspChest")
-                return
-            end
-
-            updateOrCreateESP(chest, "NameEspChest", function(label, isNew)
-                local distance = getDistance(char.Head.Position, chestPos)
-                local chestType = chest.Name:match("Chest3") and "Diamond" or
-                                 chest.Name:match("Chest2") and "Gold" or
-                                 chest.Name:match("Chest1") and "Silver" or "Default"
-
-                label.TextColor3 = Config.Esp.Chests.Colors[chestType]
-                label.Text = chest.Name:gsub("Label", "") .. "\n" .. distance .. "M"
-            end)
-        end)
-    end
-end
-
-function Modules:UpdateBerryESP()
-    if not Config.Esp.Berries.Enabled then
-        local berryBushes = Services.CollectionService:GetTagged("BerryBush")
-        for _, bush in ipairs(berryBushes) do
-            pcall(function()
-                local bushModel = bush.Parent
-                if bushModel and bushModel:IsA("Model") then
-                    local berriesFolder = bushModel:FindFirstChild("Berries")
-                    if berriesFolder then
-                        local firstBerry = berriesFolder:GetChildren()[1]
-                        if firstBerry then
-                            local espTarget = firstBerry:IsA("BasePart") and firstBerry or firstBerry:FindFirstChildWhichIsA("BasePart")
-                            if espTarget then destroyESP(espTarget, "NameEspBerry") end
-                        end
-                    end
-                end
-            end)
-        end
-        return
-    end
-
-    local char = getPlayerCharacter()
-    if not char or not char:FindFirstChild("Head") then return end
-
-    local berryBushes = Services.CollectionService:GetTagged("BerryBush")
-    for _, bush in ipairs(berryBushes) do
-        pcall(function()
-            local bushModel = bush.Parent
-            if not bushModel or not bushModel:IsA("Model") then return end
-
-            local berriesFolder = bushModel:FindFirstChild("Berries")
-            if not berriesFolder or #berriesFolder:GetChildren() == 0 then
-                destroyESP(bush, "NameEspBerry")
-                return
-            end
-
-            local berryName = nil
-            for key, value in pairs(bush:GetAttributes()) do
-                if Config.Esp.Berries.Colors[key] then
-                    berryName = key
-                    break
-                elseif Config.Esp.Berries.Colors[value] then
-                    berryName = value
-                    break
-                end
-            end
-
-            if not berryName or (#Config.Esp.Berries.FilterList > 0 and not table.find(Config.Esp.Berries.FilterList, berryName)) then
-                destroyESP(bush, "NameEspBerry")
-                return
-            end
-
-            local firstBerry = berriesFolder:GetChildren()[1]
-            local espTarget = firstBerry:IsA("BasePart") and firstBerry or firstBerry:FindFirstChildWhichIsA("BasePart")
-
-            if not espTarget or not isWithinRenderDistance(char.Head.Position, espTarget.Position) then
-                destroyESP(bush, "NameEspBerry")
-                return
-            end
-
-            updateOrCreateESP(espTarget, "NameEspBerry", function(label, isNew)
-                local distance = getDistance(char.Head.Position, espTarget.Position)
-                local colorData = Config.Esp.Berries.Colors[berryName]
-
-                label.TextColor3 = colorData[1]
-                label.Text = string.format("[%s]\n%dM", colorData[2], distance)
-            end)
-        end)
-    end
+    local result = nameId and (v.Name .. "[ " .. nameId .. " ]") or "Fruit [ ??? ]"
+    
+    FruitCache.NameCache[v] = result
+    return result
 end
 
 function Modules:UpdateDevilFruitESP()
     if not Config.Esp.DevilFruits.Enabled then
-        for _, v in ipairs(Services.Workspace:GetChildren()) do
-            pcall(function()
-                if v.Name:find("Fruit") and v:FindFirstChild("Handle") then
-                    destroyESP(v.Handle, "NameEspFruit")
-                end
-            end)
+        -- Bulk cleanup
+        for fruit, data in pairs(FruitCache.Fruits) do
+            if data and data.handle then
+                destroyESP(data.handle, "NameEspFruit")
+            end
         end
+        FruitCache.Fruits = {}
+        FruitCache.NameCache = {}
         return
     end
 
+    local currentTime = tick()
+    if (currentTime - FruitCache.LastUpdate) < FruitCache.UpdateInterval then
+        return
+    end
+    FruitCache.LastUpdate = currentTime
+
     local char = getPlayerCharacter()
     if not char or not char:FindFirstChild("Head") then return end
+    
+    local charHeadPos = char.Head.Position
+    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
+    local showId = Config.Esp.DevilFruits.ShowUnkDevilFruitId
+    
+    -- Get workspace children once
+    local workspaceChildren = Services.Workspace:GetChildren()
+    local activeFruits = {}
 
-    for _, v in ipairs(Services.Workspace:GetChildren()) do
+    for _, v in ipairs(workspaceChildren) do
         pcall(function()
-            if not v.Name:find("Fruit") or not v:FindFirstChild("Handle") then return end
+            -- Quick name check (cheaper than FindFirstChild)
+            if not v.Name:find("Fruit") then return end
+            
+            -- Check cache for handle
+            local cachedData = FruitCache.Fruits[v]
+            local handle = cachedData and cachedData.handle
+            
+            if not handle or not handle.Parent then
+                handle = v:FindFirstChild("Handle")
+                if not handle then return end
+            end
 
-            local handle = v.Handle
-            local name = v.Name
-
-            if not isWithinRenderDistance(char.Head.Position, handle.Position) then
+            -- Fast distance check
+            local distSq = (charHeadPos - handle.Position).squaredMagnitude
+            
+            if distSq > maxDistSq then
                 destroyESP(handle, "NameEspFruit")
+                FruitCache.Fruits[v] = nil
                 return
             end
 
-            if Config.Esp.DevilFruits.ShowUnkDevilFruitId then
-                name = getAccurateFruitName(v)
+            -- Get name (use cached if available)
+            local name = cachedData and cachedData.name
+            
+            if not name or (showId and not name:find("%[")) then
+                name = showId and getAccurateFruitNameCached(v) or v.Name
             end
 
+            -- Update cache
+            activeFruits[v] = true
+            FruitCache.Fruits[v] = {
+                handle = handle,
+                name = name
+            }
+
+            -- Update ESP
             updateOrCreateESP(handle, "NameEspFruit", function(label, isNew)
-                local distance = getDistance(char.Head.Position, handle.Position)
+                local distance = math.floor(math.sqrt(distSq) / 3)
                 label.TextColor3 = Config.Esp.DevilFruits.Color
                 label.Text = name .. "\n" .. distance .. "M"
             end)
         end)
     end
+    
+    -- Cleanup removed fruits
+    for fruit, data in pairs(FruitCache.Fruits) do
+        if not activeFruits[fruit] then
+            if data and data.handle then
+                destroyESP(data.handle, "NameEspFruit")
+            end
+            FruitCache.Fruits[fruit] = nil
+            FruitCache.NameCache[fruit] = nil
+        end
+    end
 end
 
+local function buildExcludeLookup()
+    IslandCache.ExcludeSet = {}
+    for _, name in ipairs(Config.Esp.Islands.ExcludeList) do
+        IslandCache.ExcludeSet[name] = true
+    end
+end
+
+-- Build event island lookup table once
+local function buildEventIslandLookup()
+    IslandCache.EventIslandSet = {}
+    for name, color in pairs(Config.Esp.EventIslands.Islands) do
+        IslandCache.EventIslandSet[name] = color
+    end
+end
+
+-- Get locations folder with caching
+local function getLocationsFolder()
+    local now = tick()
+    
+    -- Check structure every 5 seconds (in case of map changes)
+    if (now - IslandCache.LastStructureCheck) > IslandCache.StructureCheckInterval then
+        IslandCache.LastStructureCheck = now
+        
+        local worldOrigin = Services.Workspace:FindFirstChild("_WorldOrigin")
+        IslandCache.LocationsFolder = worldOrigin and worldOrigin:FindFirstChild("Locations")
+    end
+    
+    return IslandCache.LocationsFolder
+end
+
+-- Initialize lookups
+buildExcludeLookup()
+buildEventIslandLookup()
+
 function Modules:UpdateIslandESP()
-    local locations = Services.Workspace:FindFirstChild("_WorldOrigin")
-    if locations then locations = locations:FindFirstChild("Locations") end
+    local locations = getLocationsFolder()
     if not locations then return end
 
     if not Config.Esp.Islands.Enabled then
-        for _, island in ipairs(locations:GetChildren()) do
-            pcall(function() destroyESP(island, "NameEspIsland") end)
+        -- Bulk cleanup
+        for island, _ in pairs(IslandCache.Islands) do
+            destroyESP(island, "NameEspIsland")
         end
+        IslandCache.Islands = {}
         return
     end
 
+    local currentTime = tick()
+    if (currentTime - IslandCache.LastUpdate) < IslandCache.UpdateInterval then
+        return
+    end
+    IslandCache.LastUpdate = currentTime
+
     local char = getPlayerCharacter()
     if not char or not char:FindFirstChild("Head") then return end
+    
+    local charHeadPos = char.Head.Position
+    local activeIslands = {}
 
+    -- Single iteration with O(1) lookup
     for _, island in ipairs(locations:GetChildren()) do
-        pcall(function()
-            if table.find(Config.Esp.Islands.ExcludeList, island.Name) then return end
+        -- Fast lookup instead of table.find
+        if IslandCache.ExcludeSet[island.Name] then continue end
+        
+        activeIslands[island] = true
 
+        pcall(function()
             updateOrCreateESP(island, "NameEspIsland", function(label, isNew)
-                local distance = getDistance(char.Head.Position, island.Position)
+                local distance = getDistance(charHeadPos, island.Position)
                 label.TextColor3 = Config.Esp.Islands.Color
                 label.Text = island.Name .. "\n" .. distance .. "M"
             end)
         end)
     end
+    
+    -- Cleanup removed islands
+    for island, _ in pairs(IslandCache.Islands) do
+        if not activeIslands[island] then
+            destroyESP(island, "NameEspIsland")
+        end
+    end
+    
+    IslandCache.Islands = activeIslands
 end
 
 function Modules:UpdateEventIslandESP()
-    local locations = Services.Workspace:FindFirstChild("_WorldOrigin")
-    if locations then locations = locations:FindFirstChild("Locations") end
+    local locations = getLocationsFolder()
     if not locations then return end
 
     if not Config.Esp.EventIslands.Enabled then
@@ -666,76 +981,343 @@ function Modules:UpdateEventIslandESP()
 
     local char = getPlayerCharacter()
     if not char or not char:FindFirstChild("Head") then return end
+    
+    local charHeadPos = char.Head.Position
 
-    for islandName, color in pairs(Config.Esp.EventIslands.Islands) do
-        for _, island in ipairs(locations:GetChildren()) do
-            pcall(function()
-                if island.Name ~= islandName then return end
+    -- Single optimized iteration
+    for _, island in ipairs(locations:GetChildren()) do
+        local color = IslandCache.EventIslandSet[island.Name]
+        
+        -- Skip if not an event island
+        if not color then continue end
 
-                updateOrCreateESP(island, "NameEspEvent", function(label, isNew)
-                    local distance = getDistance(char.Head.Position, island.Position)
-                    label.TextColor3 = color
-                    label.Text = island.Name .. "\n" .. distance .. "M"
-                end)
+        pcall(function()
+            updateOrCreateESP(island, "NameEspEvent", function(label, isNew)
+                local distance = getDistance(charHeadPos, island.Position)
+                label.TextColor3 = color
+                label.Text = island.Name .. "\n" .. distance .. "M"
             end)
-        end
+        end)
     end
 end
+
+local function buildNPCTargetLookup()
+    NPCCache.TargetSet = {}
+    for _, name in ipairs(Config.Esp.NPCs.Targets) do
+        NPCCache.TargetSet[name] = true
+    end
+end
+
+buildNPCTargetLookup()
 
 function Modules:UpdateNPCESP()
     local npcs = Services.Workspace:FindFirstChild("NPCs")
     
     if not Config.Esp.NPCs.Enabled then
         if npcs then
-            for _, npc in ipairs(npcs:GetChildren()) do
-                pcall(function() destroyESP(npc, "NameEspNPC") end)
+            for npc, _ in pairs(NPCCache.TrackedNPCs) do
+                destroyESP(npc, "NameEspNPC")
             end
         end
+        NPCCache.TrackedNPCs = {}
         return
     end
 
+    local currentTime = tick()
+    if (currentTime - NPCCache.LastUpdate) < NPCCache.UpdateInterval then
+        return
+    end
+    NPCCache.LastUpdate = currentTime
+
     local char = getPlayerCharacter()
     if not char or not char:FindFirstChild("Head") or not npcs then return end
+    
+    local charHeadPos = char.Head.Position
+    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
+    local activeNPCs = {}
 
-    for _, npcName in ipairs(Config.Esp.NPCs.Targets) do
-        for _, npc in ipairs(npcs:GetChildren()) do
+    -- Single iteration with O(1) lookup
+    for _, npc in ipairs(npcs:GetChildren()) do
+        -- Fast lookup instead of nested loop
+        if not NPCCache.TargetSet[npc.Name] then continue end
+
+        pcall(function()
+            local distSq = (charHeadPos - npc.Position).squaredMagnitude
+            
+            if distSq > maxDistSq then
+                destroyESP(npc, "NameEspNPC")
+                return
+            end
+
+            activeNPCs[npc] = true
+
+            updateOrCreateESP(npc, "NameEspNPC", function(label, isNew)
+                local distance = math.floor(math.sqrt(distSq) / 3)
+                label.TextColor3 = Config.Esp.NPCs.Color
+                label.Text = npc.Name .. "\n" .. distance .. "M"
+            end)
+        end)
+    end
+    
+    -- Cleanup
+    for npc, _ in pairs(NPCCache.TrackedNPCs) do
+        if not activeNPCs[npc] then
+            destroyESP(npc, "NameEspNPC")
+        end
+    end
+    
+    NPCCache.TrackedNPCs = activeNPCs
+end
+
+function Modules:UpdateRealFruitESP()
+    if not Config.Esp.RealFruits.Enabled then
+        for fruit, data in pairs(RealFruitCache.Fruits) do
+            if data and data.part then
+                destroyESP(data.part, "NameEspRealFruit")
+            end
+        end
+        RealFruitCache.Fruits = {}
+        return
+    end
+
+    local currentTime = tick()
+    if (currentTime - RealFruitCache.LastUpdate) < RealFruitCache.UpdateInterval then
+        return
+    end
+    RealFruitCache.LastUpdate = currentTime
+
+    local char = getPlayerCharacter()
+    if not char or not char:FindFirstChild("Head") then return end
+    
+    local charHeadPos = char.Head.Position
+    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
+    local activeFruits = {}
+    
+    -- Search in Map folder
+    local map = Services.Workspace:FindFirstChild("Map")
+    if not map then return end
+
+    for _, obj in ipairs(map:GetDescendants()) do
+        if obj:IsA("Model") and (obj.Name == "AppleSpawner" or obj.Name == "PineappleSpawner" or obj.Name == "BananaSpawner") then
+            local part = obj:FindFirstChildWhichIsA("BasePart")
+            if not part then continue end
+            
+            local distSq = (charHeadPos - part.Position).squaredMagnitude
+            if distSq > maxDistSq then continue end
+            
+            activeFruits[obj] = true
+            
             pcall(function()
-                if npc.Name ~= npcName then return end
-
-                if not isWithinRenderDistance(char.Head.Position, npc.Position) then
-                    destroyESP(npc, "NameEspNPC")
-                    return
-                end
-
-                updateOrCreateESP(npc, "NameEspNPC", function(label, isNew)
-                    local distance = getDistance(char.Head.Position, npc.Position)
-                    label.TextColor3 = Config.Esp.NPCs.Color
-                    label.Text = npc.Name .. "\n" .. distance .. "M"
+                updateOrCreateESP(part, "NameEspRealFruit", function(label, isNew)
+                    local distance = math.floor(math.sqrt(distSq) / 3)
+                    local color = Config.Esp.RealFruits.Colors[obj.Name]
+                    
+                    label.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+                    label.Text = obj.Name .. "\n" .. distance .. "M"
                 end)
             end)
         end
     end
+    
+    -- Cleanup
+    for fruit, data in pairs(RealFruitCache.Fruits) do
+        if not activeFruits[fruit] and data.part then
+            destroyESP(data.part, "NameEspRealFruit")
+        end
+    end
+    
+    RealFruitCache.Fruits = activeFruits
 end
 
--- ESP Control Functions
+function Modules:UpdateFlowerESP()
+    if not Config.Esp.Flowers.Enabled then
+        for flower, data in pairs(FlowerCache.Flowers) do
+            if data and data.part then
+                destroyESP(data.part, "NameEspFlower")
+            end
+        end
+        FlowerCache.Flowers = {}
+        return
+    end
+
+    local currentTime = tick()
+    if (currentTime - FlowerCache.LastUpdate) < FlowerCache.UpdateInterval then
+        return
+    end
+    FlowerCache.LastUpdate = currentTime
+
+    local char = getPlayerCharacter()
+    if not char or not char:FindFirstChild("Head") then return end
+    
+    local charHeadPos = char.Head.Position
+    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
+    local activeFlowers = {}
+    
+    -- Search in Workspace
+    for _, obj in ipairs(Services.Workspace:GetChildren()) do
+        if obj:IsA("Model") and (obj.Name == "Flower1" or obj.Name == "Flower2") then
+            local part = obj:FindFirstChildWhichIsA("BasePart")
+            if not part then continue end
+            
+            local distSq = (charHeadPos - part.Position).squaredMagnitude
+            if distSq > maxDistSq then continue end
+            
+            activeFlowers[obj] = true
+            
+            pcall(function()
+                updateOrCreateESP(part, "NameEspFlower", function(label, isNew)
+                    local distance = math.floor(math.sqrt(distSq) / 3)
+                    local colorData = Config.Esp.Flowers.Colors[obj.Name]
+                    
+                    label.TextColor3 = colorData[1]
+                    label.Text = colorData[2] .. "\n" .. distance .. "M"
+                end)
+            end)
+        end
+    end
+    
+    -- Cleanup
+    for flower, data in pairs(FlowerCache.Flowers) do
+        if not activeFlowers[flower] and data.part then
+            destroyESP(data.part, "NameEspFlower")
+        end
+    end
+    
+    FlowerCache.Flowers = activeFlowers
+end
+
+function Modules:UpdateGearESP()
+    if not Config.Esp.Gear.Enabled then
+        for gear, data in pairs(GearCache.Gears) do
+            if data and data.part then
+                destroyESP(data.part, "NameEspGear")
+            end
+        end
+        GearCache.Gears = {}
+        return
+    end
+
+    local currentTime = tick()
+    if (currentTime - GearCache.LastUpdate) < GearCache.UpdateInterval then
+        return
+    end
+    GearCache.LastUpdate = currentTime
+
+    local char = getPlayerCharacter()
+    if not char or not char:FindFirstChild("Head") then return end
+    
+    local charHeadPos = char.Head.Position
+    local maxDistSq = Config.Esp.General.MaxRenderDistance ^ 2
+    local activeGears = {}
+    local mirageIsland = Services.Workspace.Map:FindFirstChild("MysticIsland")
+    if not mirageIsland then return end
+    
+    -- Search in Workspace
+    for _, obj in ipairs(mirageIsland:GetChildren()) do
+        if v:IsA("MeshPart") and v.Material ==  Enum.Material.Neon then
+            local part = obj:FindFirstChildWhichIsA("BasePart")
+            if not part then continue end
+            
+            local distSq = (charHeadPos - part.Position).squaredMagnitude
+            if distSq > maxDistSq then continue end
+            
+            activeGears[obj] = true
+            
+            pcall(function()
+                updateOrCreateESP(part, "NameEspGear", function(label, isNew)
+                    local distance = math.floor(math.sqrt(distSq) / 3)
+                    
+                    label.TextColor3 = Config.Esp.Gear.Color
+                    label.Text = obj.Name .. "\n" .. distance .. "M"
+                end)
+            end)
+        end
+    end
+    
+    -- Cleanup
+    for gear, data in pairs(GearCache.Gears) do
+        if not activeGears[gear] and data.part then
+            destroyESP(data.part, "NameEspGear")
+        end
+    end
+    
+    GearCache.Gears = activeGears
+end
+
 function Modules:StartESP()
     if self.UpdateConnection then return end
-
-    self.UpdateConnection = Services.RunService.Heartbeat:Connect(function()
-        local currentTime = tick()
-        if currentTime - Cache.LastUpdate < Config.Esp.General.UpdateRate then return end
-        Cache.LastUpdate = currentTime
-
-        self:UpdatePlayerESP()
-        self:UpdateChestESP()
-        self:UpdateBerryESP()
-        self:UpdateDevilFruitESP()
-        self:UpdateIslandESP()
-        self:UpdateEventIslandESP()
-        self:UpdateNPCESP()
+    
+    local updateCount = 0
+    self.UpdateConnection = Services.RunService.Heartbeat:Connect(function(deltaTime)
+        local startTime = tick()
+        updateCount = updateCount + 1
+        
+        -- FPS tracking
+        local fps = deltaTime > 0 and (1 / deltaTime) or 60
+        
+        -- Stagger updates across 10 frames
+        local frame = updateCount % 10
+        
+        if frame == 0 then 
+            local t = tick()
+            self:UpdatePlayerESP()
+        end
+        
+        if frame == 1 then 
+            local t = tick()
+            self:UpdateChestESP()
+        end
+        
+        if frame == 2 then 
+            local t = tick()
+            self:UpdateBerryESP()
+        end
+        
+        if frame == 3 then 
+            local t = tick()
+            self:UpdateDevilFruitESP()
+        end
+        
+        if frame == 4 then 
+            local t = tick()
+            self:UpdateIslandESP()
+        end
+        
+        if frame == 5 then 
+            local t = tick()
+            self:UpdateEventIslandESP()
+        end
+        
+        if frame == 6 then 
+            local t = tick()
+            self:UpdateNPCESP()
+        end
+        
+        if frame == 7 then 
+            local t = tick()
+            self:UpdateRealFruitESP()
+        end
+        
+        if frame == 8 then 
+            local t = tick()
+            self:UpdateFlowerESP()
+        end
+        
+        if frame == 9 then 
+            local t = tick()
+            self:UpdateGearESP()
+        end
     end)
     
-    print("ESP Started")
+    print("✓ ESP Started")
+end
+
+function Modules:SetESPPriority(category, interval)
+    if ESPManager.UpdateIntervals[category] then
+        ESPManager.UpdateIntervals[category] = math.max(0.1, interval)
+        return true
+    end
+    return false
 end
 
 function Modules:StopESP()
@@ -749,6 +1331,15 @@ end
 function Modules:SetESPConfig(category, key, value)
     if Config.Esp[category] and Config.Esp[category][key] ~= nil then
         Config.Esp[category][key] = value
+        
+        if category == "NPCs" and key == "Targets" then
+            buildNPCTargetLookup()
+        elseif category == "Islands" and key == "ExcludeList" then
+            buildExcludeLookup()
+        elseif category == "EventIslands" and key == "Islands" then
+            buildEventIslandLookup()
+        end
+        
         return true
     end
     return false
@@ -942,8 +1533,9 @@ function Modules:GetBoatSpeed()
     return math.clamp(Config.Tween.defaultBoatTweenSpeed, 50, 300)
 end
 
-Modules.Hover = {}
-Modules.Hover._originalCollisions = Modules.Hover._originalCollisions or {}
+Modules.Hover = {
+    _originalCollisions = {}
+}
 function Modules.Hover:Ensure()
     if not Modules:ValidateReferences() then return end
     
@@ -997,15 +1589,6 @@ function Modules.Hover:SetNoClip(enabled)
     end
 end
 
--- Heartbeat for hover with continuous tween support
-Services.RunService.Heartbeat:Connect(function()
-    if State.hoverClip and State.hoverClip.Parent then
-        if State.isTweening or TweenStateManager:HasContinuousTweens() then
-            State.hoverClip.Velocity = Vector3.new(0, 0, 0)
-        end
-    end
-end)
-
 function Modules.CheckMyBoat()
     if not Modules:ValidateReferences() then return nil end
 
@@ -1040,29 +1623,43 @@ function Modules.CheckInMyBoat()
     return Humanoid.Sit and (HRP.Position - vehicleSeat.Position).Magnitude <= 5
 end
 
+local BoatPartCache = {}
 function Modules:ManageBoatHover(boat, enabled)
     if not boat or not boat:FindFirstChild("VehicleSeat") then return end
 
     local vehicleSeat = boat.VehicleSeat
     local bv = vehicleSeat:FindFirstChild("boatHoverTweenVin")
     
-    -- Prepare cache for this boat
+    -- Initialize cache for this boat
     State.boatOriginalCollision[boat] = State.boatOriginalCollision[boat] or {}
     local cache = State.boatOriginalCollision[boat]
     
     if enabled then
-        -- Create BodyVelocity if not exists
+        -- Create BodyVelocity if needed
         if not bv then
             bv = Instance.new("BodyVelocity")
             bv.Name = "boatHoverTweenVin"
             bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-            bv.Velocity = Vector3.new(0, 0, 0)
+            bv.Velocity = Vector3.zero
             bv.Parent = vehicleSeat
             State.boatHoverClips[boat] = bv
         end
-        -- Turn off collision (and cache original state)
-        for _, part in pairs(boat:GetDescendants()) do
-            if part:IsA("BasePart") then
+        
+        -- Get or cache boat parts
+        local parts = BoatPartCache[boat]
+        if not parts then
+            parts = {}
+            for _, part in pairs(boat:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    table.insert(parts, part)
+                end
+            end
+            BoatPartCache[boat] = parts
+        end
+        
+        -- Disable collision (faster iteration)
+        for _, part in ipairs(parts) do
+            if part and part.Parent then
                 if cache[part] == nil then
                     cache[part] = part.CanCollide
                 end
@@ -1076,17 +1673,55 @@ function Modules:ManageBoatHover(boat, enabled)
             State.boatHoverClips[boat] = nil
         end
         
-        -- Restore original collision
+        -- Restore collision from cache
         for part, original in pairs(cache) do
-            if part and part:IsA("BasePart") then
+            if part and part.Parent and part:IsA("BasePart") then
                 part.CanCollide = original
             end
         end
         
-        -- Cleanup cache for this boat
+        -- Cleanup
         State.boatOriginalCollision[boat] = nil
+        BoatPartCache[boat] = nil
     end
 end
+
+local lastHoverUpdate = 0
+local HOVER_UPDATE_INTERVAL = 0.05 -- 20 FPS is enough for hover
+Services.RunService.Heartbeat:Connect(function()
+    local now = tick()
+    
+    -- Throttle updates
+    if (now - lastHoverUpdate) < HOVER_UPDATE_INTERVAL then
+        return
+    end
+    lastHoverUpdate = now
+    
+    -- Player hover
+    if State.hoverClip and State.hoverClip.Parent then
+        if State.isTweening or TweenStateManager:HasContinuousTweens() then
+            State.hoverClip.Velocity = Vector3.zero
+        end
+    end
+    
+    -- Boat hover (only if needed)
+    if not State.isTweening and not Modules.CheckInMyBoat() then
+        -- Cleanup all boat hovers when not needed
+        for boat, bv in pairs(State.boatHoverClips) do
+            Modules:ManageBoatHover(boat, false)
+        end
+        return
+    end
+    
+    -- Update active boat hover
+    local myBoat = Modules.CheckMyBoat()
+    if myBoat and State.boatHoverClips[myBoat] then
+        local bv = State.boatHoverClips[myBoat]
+        if bv and bv.Parent then
+            bv.Velocity = Vector3.zero
+        end
+    end
+end)
 
 Modules.Portal = {}
 local PortalLocations = {
@@ -1187,17 +1822,16 @@ end
 function Modules.Tween:ToTarget(targetCFrame, options)
     if not Modules:ValidateReferences() then return end
     
-    -- Support both old (btnState) and new (options table) API
+    -- Normalize options
     if type(options) == "boolean" then
         options = {stopOnToggle = options}
     elseif type(options) ~= "table" then
         options = {}
     end
     
-    -- Generate unique tween ID
     local tweenId = "tween_" .. tostring(tick()):gsub("%.", "_")
     
-    -- Create tween state
+    -- Create tween state with cleanup tracking
     local tweenState = TweenStateManager:Create(tweenId, {
         continuous = options.continuous or false,
         loopMode = options.loopMode or false,
@@ -1236,22 +1870,75 @@ function Modules.Tween:ToTarget(targetCFrame, options)
 
     Modules.Hover:SetNoClip(true)
     
-    local velocityControl
-    local monitorTask
+    -- OPTIMIZED: Unified connection management
+    local connections = {}
+    local cleanupPerformed = false
     
-    velocityControl = Services.RunService.Heartbeat:Connect(function()
-        if not State.isTweening or not Modules:ValidateReferences() then return end
+    local function performCleanup()
+        if cleanupPerformed then return end
+        cleanupPerformed = true
+        
+        -- Disconnect all connections
+        for _, conn in ipairs(connections) do
+            if conn and conn.Connected then
+                conn:Disconnect()
+            end
+        end
+        connections = {}
+        
+        -- Stop tween
+        if State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
+            pcall(function() State.currentTween:Cancel() end)
+        end
+        
+        -- Reset velocity
+        if Modules:ValidateReferences() then
+            pcall(function()
+                HRP.AssemblyLinearVelocity = Vector3.zero
+                HRP.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end
+        
+        -- Remove from active tweens
+        for i = #State.activeTweens, 1, -1 do
+            if State.activeTweens[i] == State.currentTween then
+                table.remove(State.activeTweens, i)
+            end
+        end
+    end
+    
+    -- Velocity control with proper limits
+    local velocityControl = Services.RunService.Heartbeat:Connect(function()
+        if not State.isTweening or not Modules:ValidateReferences() then 
+            performCleanup()
+            return 
+        end
         
         local currentVelocity = HRP.AssemblyLinearVelocity
-        if currentVelocity.Magnitude > Config.Safety.maxVelocityMagnitude then
+        local velMag = currentVelocity.Magnitude
+        
+        if velMag > Config.Safety.maxVelocityMagnitude then
             HRP.AssemblyLinearVelocity = currentVelocity.Unit * Config.Safety.maxVelocityMagnitude
         end
     end)
+    table.insert(connections, velocityControl)
 
-    -- NEW: Enhanced monitor with state checking
-    monitorTask = task.spawn(function()
+    -- OPTIMIZED: Monitor task with better exit conditions
+    local monitorTask = task.spawn(function()
+        local lastCheck = tick()
+        local CHECK_INTERVAL = Config.Performance.updateInterval
+        
         while State.isTweening and TweenStateManager:IsActive(tweenId) do
-            -- Check stop conditions
+            local now = tick()
+            
+            -- Throttle checks
+            if (now - lastCheck) < CHECK_INTERVAL then
+                task.wait(CHECK_INTERVAL)
+                continue
+            end
+            lastCheck = now
+            
+            -- Stop conditions
             if options.stopOnToggle and not TweenStateManager:IsActive(tweenId) then
                 State.isTweening = false
                 break
@@ -1259,24 +1946,23 @@ function Modules.Tween:ToTarget(targetCFrame, options)
 
             if not Modules:ValidateReferences() then
                 State.isTweening = false
-                if State.currentTween then
-                    State.currentTween:Cancel()
-                end
+                performCleanup()
                 break
             end
             
-            -- Loop detection for continuous tweens
-            if options.continuous or options.loopMode then
+            -- Loop detection (only for continuous)
+            if (options.continuous or options.loopMode) and Modules:ValidateReferences() then
                 local isLoop = LoopDetector:Track(HRP.Position)
                 if isLoop then
                     LoopDetector:RegisterLoop(tweenId)
                 end
             end
             
-            task.wait(Config.Performance.updateInterval)
+            task.wait(CHECK_INTERVAL)
         end
     end)
 
+    -- Create and play tween
     local tweenInfo = self:CalculateTweenInfo(dist)
     local portal = Modules.Portal:GetClosest(targetCFrame)
     
@@ -1288,32 +1974,18 @@ function Modules.Tween:ToTarget(targetCFrame, options)
         table.insert(State.activeTweens, State.currentTween)
     end
 
-    -- Return control object
+    -- Control object with proper cleanup
     local tweenControl = {}
     function tweenControl:Stop()
         TweenStateManager:Stop(tweenId)
         State.isTweening = false
-        
-        if velocityControl then
-            velocityControl:Disconnect()
-        end
-        
-        if State.currentTween and State.currentTween.PlaybackState == Enum.PlaybackState.Playing then
-            State.currentTween:Cancel()
-        end
-        State.currentTween = nil
+        performCleanup()
+        Modules.Hover:SetNoClip(false)
+        LoopDetector:UnregisterLoop(tweenId)
         
         if monitorTask then
             task.cancel(monitorTask)
         end
-        
-        if Modules:ValidateReferences() then
-            HRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-            HRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-        end
-        
-        Modules.Hover:SetNoClip(false)
-        LoopDetector:UnregisterLoop(tweenId)
     end
     
     function tweenControl:GetState()
@@ -1324,46 +1996,41 @@ function Modules.Tween:ToTarget(targetCFrame, options)
         return TweenStateManager:IsActive(tweenId)
     end
 
-    -- Wait for completion
+    -- Wait for completion with timeout
     if State.currentTween then
         local startTime = tick()
+        local maxDuration = (dist / Modules:GetTweenSpeed()) + 5 -- 5 second buffer
+        
         local success = pcall(function()
-            State.currentTween.Completed:Wait()
+            while State.currentTween.PlaybackState == Enum.PlaybackState.Playing do
+                if (tick() - startTime) > maxDuration then
+                    warn("⚠️ Tween timeout reached")
+                    break
+                end
+                task.wait(0.1)
+            end
         end)
         
-        if success then
-            local tweenTime = tick() - startTime
-            State.performance.tweenCount = State.performance.tweenCount + 1
-            State.performance.avgTweenTime = (State.performance.avgTweenTime + tweenTime) / 2
-            
-            if tweenState.completeCallback then
-                task.spawn(tweenState.completeCallback)
-            end
+        if success and tweenState.completeCallback then
+            task.spawn(tweenState.completeCallback)
         end
         
+        -- Final position snap
         if Modules:ValidateReferences() then
             task.wait(0.1)
             HRP.CFrame = targetCFrame
-            HRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-            HRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            HRP.AssemblyLinearVelocity = Vector3.zero
+            HRP.AssemblyAngularVelocity = Vector3.zero
         end
     end
 
-    if velocityControl then
-        velocityControl:Disconnect()
-    end
+    performCleanup()
     
     -- Only stop if not continuous
     if not TweenStateManager:ShouldContinue(tweenId) then
         State.isTweening = false
         Modules.Hover:SetNoClip(false)
         LoopDetector:UnregisterLoop(tweenId)
-    end
-
-    for i = #State.activeTweens, 1, -1 do
-        if State.activeTweens[i] == State.currentTween then
-            table.remove(State.activeTweens, i)
-        end
     end
     
     TweenStateManager:Cleanup(tweenId)
@@ -1373,39 +2040,52 @@ end
 function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
     local templePos = Vector3.new(28282.5703125, 14896.8505859375, 105.1042709350586)
     
+    -- Helper function for waiting with validation
+    local function smartWait(duration, validateFunc)
+        local startTime = tick()
+        while (tick() - startTime) < duration do
+            if validateFunc and not validateFunc() then
+                return false -- Abort if validation fails
+            end
+            task.wait(0.1)
+        end
+        return true
+    end
+    
     -- Temple of Time
-    if (portal - Vector3.new(28282.5703, 14896.8506, 105.1043)).Magnitude < 10 then
-        local mapStash = Services.ReplicatedStorage:WaitForChild("MapStash", 5)
+    if (portal - templePos).Magnitude < 10 then
+        local mapStash = Services.ReplicatedStorage:WaitForChild("MapStash", 3)
         local temple = mapStash and mapStash:FindFirstChild("Temple of Time")
         
         if temple and not Services.Workspace:FindFirstChild("Temple of Time") then
-            temple.Parent = Services.Workspace:WaitForChild("Map", 5)
+            temple.Parent = Services.Workspace:WaitForChild("Map", 3)
         end
         
-        local timeout = 0
-        while not Services.Workspace:FindFirstChild("Temple of Time") and timeout < 50 do
-            task.wait(0.1)
-            timeout = timeout + 1
+        -- Reduced timeout with smarter checking
+        local attempts = 0
+        while not Services.Workspace:FindFirstChild("Temple of Time") and attempts < 20 do
+            task.wait(0.05) -- Faster polling
+            attempts = attempts + 1
         end
         
         if Services.Workspace:FindFirstChild("Temple of Time") and (templePos - HRP.Position).Magnitude > 1000 then
             CommF_:InvokeServer("requestEntrance", templePos)
-            task.wait(1) -- Increased wait for server
+            smartWait(0.5, function() return Modules:ValidateReferences() end) -- Reduced from 1s
         end
     
     -- Great Tree
     elseif (portal - Vector3.new(3028.209228515625, 2280.84619140625, -7324.2880859375)).Magnitude < 10 then
         if (templePos - HRP.Position).Magnitude > 1000 then
             CommF_:InvokeServer("requestEntrance", templePos)
-            task.wait(1)
+            smartWait(0.5, function() return Modules:ValidateReferences() end)
         end
 
         HRP.CFrame = CFrame.new(28609.650390625, 14896.5458984375, 105.68901062011719)
-        task.wait(0.5)
+        smartWait(0.3, function() return Modules:ValidateReferences() end) -- Reduced from 0.5s
 
         if Modules:ValidateReferences() and (HRP.Position - Vector3.new(28609.6504, 14896.5459, 105.6890)).Magnitude <= 20 then
             CommF_:InvokeServer("RaceV4Progress", "TeleportBack")
-            task.wait(1)
+            smartWait(0.5, function() return Modules:ValidateReferences() end)
         end
     
     -- Dimension Shift
@@ -1418,7 +2098,7 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
             local main = mirror:FindFirstChild("Main")
             if main then
                 HRP.CFrame = main.CFrame
-                task.wait(0.5)
+                smartWait(0.3, function() return Modules:ValidateReferences() end)
             end
         end
     
@@ -1429,11 +2109,11 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
 
         if (submarinePos - HRP.Position).Magnitude > 1205 then
             CommF_:InvokeServer("requestEntrance", castlePos)
-            task.wait(1)
+            smartWait(0.5, function() return Modules:ValidateReferences() end)
 
             if Modules:ValidateReferences() then
                 HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-                task.wait(0.5)
+                smartWait(0.3, function() return Modules:ValidateReferences() end)
             end
         end
         
@@ -1442,9 +2122,15 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
         
         State.currentTween = Services.TweenService:Create(HRP, subTweenInfo, {CFrame = CFrame.new(submarinePos)})
         State.currentTween:Play()
+        
+        -- Non-blocking wait
+        local connection
+        connection = State.currentTween.Completed:Connect(function()
+            connection:Disconnect()
+        end)
         State.currentTween.Completed:Wait()
 
-        task.wait(0.5)
+        smartWait(0.3, function() return Modules:ValidateReferences() end)
 
         if Modules:ValidateReferences() and (submarinePos - HRP.Position).Magnitude <= 15 then
             local rep = Services.ReplicatedStorage
@@ -1455,7 +2141,7 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
             self:StopAll(true)
             if rf then
                 rf:InvokeServer("TravelToSubmergedIsland")
-                task.wait(2)
+                smartWait(1.0, function() return Modules:ValidateReferences() end) -- This one needs to be longer
             end
         end
     
@@ -1463,41 +2149,41 @@ function Modules.Tween:HandlePortalTeleport(portal, targetCFrame, tweenInfo)
     elseif (portal - Vector3.new(-16799.091796875, 84.32279968261719, 291.0728454589844)).Magnitude < 10 then
         local castlePos = Vector3.new(-5058.7749, 314.5155, -3155.8833)
         local tikiPos = Vector3.new(-16799.091796875, 84.32279968261719, 291.0728454589844)
+        local tikiWaypoint = Vector3.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
         
         if (tikiPos - HRP.Position).Magnitude > 2000 then
             CommF_:InvokeServer("requestEntrance", castlePos)
-            task.wait(1)
+            smartWait(0.5, function() return Modules:ValidateReferences() end)
 
             if Modules:ValidateReferences() then
-                HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-                task.wait(0.5)
+                HRP.CFrame = CFrame.new(tikiWaypoint)
+                smartWait(0.3, function() return Modules:ValidateReferences() end)
             end
         elseif (castlePos - HRP.Position).Magnitude < 750 then
-            if (Vector3.new(-5097.1318359375, 318.50201416015625, -3178.3984375) - HRP.Position).Magnitude < 100 then
+            if (tikiWaypoint - HRP.Position).Magnitude < 100 then
                 if Modules:ValidateReferences() then
                     if State.isTweening then
                         self:StopAll(true)
                     end
-
-                    HRP.CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)
-                    task.wait(0.5)
+                    HRP.CFrame = CFrame.new(tikiWaypoint)
+                    smartWait(0.3, function() return Modules:ValidateReferences() end)
                 end
             else
-                local tikiDist = (Vector3.new(-5097.1318359375, 318.50201416015625, -3178.3984375) - HRP.Position).Magnitude
-                local tikiTweenInfo = self:CalculateTweenInfo(tikiDist)
+                local dist = (tikiWaypoint - HRP.Position).Magnitude
+                local tweenInfo = self:CalculateTweenInfo(dist)
             
-                State.currentTween = Services.TweenService:Create(HRP, tikiTweenInfo, {CFrame = CFrame.new(-5097.1318359375, 318.50201416015625, -3178.3984375)})
+                State.currentTween = Services.TweenService:Create(HRP, tweenInfo, {CFrame = CFrame.new(tikiWaypoint)})
                 State.currentTween:Play()
                 State.currentTween.Completed:Wait()
             end
         end
 
-        task.wait(0.5)
+        smartWait(0.3, function() return Modules:ValidateReferences() end)
     
     -- Generic portal
     else
         CommF_:InvokeServer("requestEntrance", portal)
-        task.wait(1)
+        smartWait(0.5, function() return Modules:ValidateReferences() end)
     end
 
     -- Final tween to target
@@ -1517,44 +2203,67 @@ function Modules.Tween:Boat(targetCFrame, autoManage)
     local vehicleSeat = myShip:FindFirstChild("VehicleSeat")
     if not vehicleSeat then return end
     
+    -- Start monitoring if needed
     startBoatHoverMonitor()
 
+    -- Manage hover (default enabled)
     if autoManage ~= false then
         Modules:ManageBoatHover(myShip, true)
     end
 
+    -- Calculate distance and tween info
     local dist = (targetCFrame.Position - vehicleSeat.Position).Magnitude
-    -- Use slower speed for boats
-    local tweenInfo = self:CalculateTweenInfo(dist, Config.Tween.defaultBoatTweenSpeed)
+    local boatSpeed = Modules:GetBoatSpeed()
+    local tweenInfo = self:CalculateTweenInfo(dist, boatSpeed)
 
+    -- Create tween
     local tween = Services.TweenService:Create(vehicleSeat, tweenInfo, {CFrame = targetCFrame})
     tween:Play()
     
     table.insert(State.activeTweens, tween)
     
-    local boatTweenFunc = {}
-    function boatTweenFunc:Stop()
-        if tween and tween.PlaybackState == Enum.PlaybackState.Playing then
-            tween:Cancel()
+    -- Control object
+    local boatControl = {
+        tween = tween,
+        ship = myShip,
+        autoManage = autoManage,
+        completed = false
+    }
+    
+    function boatControl:Stop()
+        if self.completed then return end
+        self.completed = true
+        
+        -- Cancel tween
+        if self.tween and self.tween.PlaybackState == Enum.PlaybackState.Playing then
+            pcall(function() self.tween:Cancel() end)
         end
         
+        -- Remove from active list
         for i = #State.activeTweens, 1, -1 do
-            if State.activeTweens[i] == tween then
+            if State.activeTweens[i] == self.tween then
                 table.remove(State.activeTweens, i)
                 break
             end
         end
         
-        if autoManage ~= false then
-            Modules:ManageBoatHover(myShip, false)
+        -- Disable hover
+        if self.autoManage ~= false and self.ship then
+            Modules:ManageBoatHover(self.ship, false)
         end
     end
     
+    -- Auto-cleanup on completion
     tween.Completed:Connect(function()
+        if boatControl.completed then return end
+        boatControl.completed = true
+        
+        -- Disable hover
         if autoManage ~= false then
             Modules:ManageBoatHover(myShip, false)
         end
         
+        -- Remove from active list
         for i = #State.activeTweens, 1, -1 do
             if State.activeTweens[i] == tween then
                 table.remove(State.activeTweens, i)
@@ -1563,7 +2272,7 @@ function Modules.Tween:Boat(targetCFrame, autoManage)
         end
     end)
     
-    return boatTweenFunc
+    return boatControl
 end
 
 function Modules.Tween:StopAll(stopMovement)
@@ -1616,17 +2325,43 @@ end
 
 -- Initialization
 local function InitializeReferences()
-    local success = Modules:SafePcall(function()
-        Character = Player.Character or Player.CharacterAdded:Wait()
+    local success, err = Modules:SafePcall(function()
+        -- Wait for character with timeout
+        local waitStart = tick()
+        while not Player.Character and (tick() - waitStart) < 10 do
+            task.wait(0.1)
+        end
+        
+        if not Player.Character then
+            error("Character not found after 10 seconds")
+        end
+        
+        Character = Player.Character
+        
+        -- Wait for essential components
         HRP = Character:WaitForChild("HumanoidRootPart", 10)
         Humanoid = Character:WaitForChild("Humanoid", 10)
+        
+        if not HRP or not Humanoid then
+            error("Essential character components not found")
+        end
+        
+        -- Validate health
+        if Humanoid.Health <= 0 then
+            error("Character is dead on initialization")
+        end
     end)
 
-    return success and HRP and Humanoid and Humanoid.Health > 0
+    if not success then
+        warn("⚠️ Initialization failed:", err)
+        return false
+    end
+    
+    return true
 end
 
 function Modules:Initialize()
-    if State.isInitialized then return true end
+    if State.isInitialized then  return true end
     if not InitializeReferences() then return false end
 
     State.isInitialized = true
@@ -1641,25 +2376,65 @@ end
 
 -- Character respawn handling
 Player.CharacterAdded:Connect(function(newChar)
+    -- Stop all active processes
     State.isInitialized = false
     State.isTweening = false
+    
+    -- Clear tween state
     State.activeTweens = {}
     State.tweenQueue = {}
     State.tweenStates = {}
     State.continuousTweens = {}
+    State.currentTween = nil
+    
+    -- Clear validation cache
     State.validationCache = false
     State.lastValidation = 0
-    Character = newChar
     
-    Modules.Hover:Remove()
+    -- Clear performance metrics
+    State.performance = {
+        tweenCount = 0,
+        avgTweenTime = 0,
+        lastFrameTime = tick()
+    }
+    
+    ESPCache.Players = {}
+    ChestCache.Chests = {}
+    BerryCache.Bushes = {}
+    BerryCache.AttributeCache = {}
+    FruitCache.Fruits = {}
+    FruitCache.NameCache = {}
+    IslandCache.Islands = {}
+    NPCCache.TrackedNPCs = {}
+    RealFruitCache.Fruits = {}
+    FlowerCache.Flowers = {}
+    GearCache.Gears = {}
+    
+    -- Clear boat caches
+    State.boatOriginalCollision = {}
+    State.boatHoverClips = {}
+    BoatPartCache = {}
+    
+    -- Stop all tweens
     TweenStateManager:StopAll()
     LoopDetector:Clear()
-
+    
+    -- Remove hover
+    Modules.Hover:Remove()
+    
+    -- Update character reference
+    Character = newChar
+    
+    -- Wait for character to load
     task.wait(0.5)
+    
+    -- Re-initialize
     if not Modules:Initialize() then
         task.wait(0.5)
         Modules:Initialize()
     end
+    
+    print("✓ Character respawned, all systems reinitialized")
 end)
 
 function Modules:InitSaveManager(mango)
@@ -1694,49 +2469,100 @@ function Modules:IsInLoop()
     return LoopDetector:IsInLoop()
 end
 
-if Config.Safety.preventStuck then
-    local lastPosition = nil
-    local stuckTime = 0
-    local stuckCheckConnection
-    
-    local function startStuckCheck()
-        if stuckCheckConnection then return end
-        
-        stuckCheckConnection = Services.RunService.Heartbeat:Connect(function()
-            if not State.isTweening or not Modules:ValidateReferences() then 
-                lastPosition = nil
-                stuckTime = 0
-                
-                if stuckCheckConnection then
-                    stuckCheckConnection:Disconnect()
-                    stuckCheckConnection = nil
-                end
-                return 
-            end
-            
-            local currentPos = HRP.Position
-            
-            if lastPosition then
-                local moved = (currentPos - lastPosition).Magnitude
-                
-                if moved < 2 then
-                    stuckTime = stuckTime + (1/60) -- Heartbeat delta
-                    
-                    if stuckTime > 1 then
-                        local lookVector = HRP.CFrame.LookVector
-                        HRP.CFrame = HRP.CFrame + Vector3.new(0, 5, 0) + (lookVector * 10)
-                        stuckTime = 0
-                    end
-                else
-                    stuckTime = 0
-                end
-            end
-            
-            lastPosition = currentPos
-        end)
-    end
+local StuckDetector = {
+    enabled = Config.Safety.preventStuck,
+    lastPosition = nil,
+    stuckTime = 0,
+    stuckThreshold = 1.5, -- Seconds before considering stuck
+    movementThreshold = 2, -- Studs moved to not be stuck
+    unstuckAttempts = 0,
+    maxUnstuckAttempts = 3,
+    lastUnstuckTime = 0,
+    unstuckCooldown = 5 -- Seconds between unstuck attempts
+}
 
-    startStuckCheck()
+function StuckDetector:Check()
+    if not self.enabled or not State.isTweening or not Modules:ValidateReferences() then
+        self:Reset()
+        return
+    end
+    
+    local currentPos = HRP.Position
+    local now = tick()
+    
+    if self.lastPosition then
+        local moved = (currentPos - self.lastPosition).Magnitude
+        
+        if moved < self.movementThreshold then
+            self.stuckTime = self.stuckTime + (1/60) -- Heartbeat delta
+            
+            if self.stuckTime > self.stuckThreshold then
+                -- Check cooldown
+                if (now - self.lastUnstuckTime) > self.unstuckCooldown then
+                    self:Unstuck()
+                end
+            end
+        else
+            -- Moving normally, reset
+            self.stuckTime = 0
+            self.unstuckAttempts = 0
+        end
+    end
+    
+    self.lastPosition = currentPos
+end
+
+function StuckDetector:Unstuck()
+    if self.unstuckAttempts >= self.maxUnstuckAttempts then
+        warn("⚠️ Maximum unstuck attempts reached, stopping tween")
+        Modules.Tween:StopAll(true)
+        self:Reset()
+        return
+    end
+    
+    self.unstuckAttempts = self.unstuckAttempts + 1
+    self.lastUnstuckTime = tick()
+    
+    local methods = {
+        -- Method 1: Jump up and forward
+        function()
+            local lookVector = HRP.CFrame.LookVector
+            HRP.CFrame = HRP.CFrame + Vector3.new(0, 10, 0) + (lookVector * 15)
+        end,
+        
+        -- Method 2: Teleport to the side
+        function()
+            local rightVector = HRP.CFrame.RightVector
+            HRP.CFrame = HRP.CFrame + (rightVector * 20)
+        end,
+        
+        -- Method 3: Teleport high up
+        function()
+            HRP.CFrame = HRP.CFrame + Vector3.new(0, 50, 0)
+        end
+    }
+    
+    -- Use different method each attempt
+    local method = methods[self.unstuckAttempts] or methods[1]
+    pcall(method)
+    
+    print(string.format("⚠️ Stuck detected, applying unstuck method %d", self.unstuckAttempts))
+    
+    self.stuckTime = 0
+end
+
+function StuckDetector:Reset()
+    self.lastPosition = nil
+    self.stuckTime = 0
+    self.unstuckAttempts = 0
+end
+
+-- Integrate into heartbeat
+local stuckCheckConnection
+if Config.Safety.preventStuck then
+    stuckCheckConnection = Services.RunService.Heartbeat:Connect(function()
+        StuckDetector:Check()
+    end)
 end
 
 -- Configuration management
@@ -1790,16 +2616,28 @@ function Modules:GetConfig(key)
     end
 end
 
--- Initialize on load
-local initSuccess = Modules:Initialize()
-if not initSuccess then
-    task.wait(0.5)
-    initSuccess = Modules:Initialize()
+local function AutoInitialize()
+    local maxRetries = 3
+    local retryDelay = 1
     
-    if not initSuccess then
-        warn("Failed to initialize Modules v" .. Modules.Version)
+    for attempt = 1, maxRetries do
+        if Modules:Initialize() then
+            return true
+        end
+        
+        if attempt < maxRetries then
+            warn(string.format("⚠️ Initialization attempt %d/%d failed, retrying in %ds...", 
+                attempt, maxRetries, retryDelay))
+            task.wait(retryDelay)
+        end
     end
+    
+    warn("❌ Failed to initialize after", maxRetries, "attempts")
+    return false
 end
+
+-- Start initialization
+AutoInitialize()
 
 -- Global access
 _G.Modules = Modules
