@@ -1563,6 +1563,14 @@ function Modules.Hover:Ensure()
     return State.hoverClip
 end
 
+function Modules.Hover:IsHoverEnabled()
+    if not Modules:ValidateReferences() then return false end
+    if State.hoverClip and State.hoverClip.Parent == HRP then 
+        return true
+    end
+    return false
+end
+
 function Modules.Hover:Remove()
     if State.hoverClip then
         State.hoverClip:Destroy()
@@ -1705,9 +1713,7 @@ Services.RunService.Heartbeat:Connect(function()
     
     -- Player hover
     if State.hoverClip and State.hoverClip.Parent then
-        if State.isTweening or TweenStateManager:HasContinuousTweens() then
-            State.hoverClip.Velocity = Vector3.zero
-        end
+        State.hoverClip.Velocity = Vector3.zero
     end
     
     -- Boat hover (only if needed)
@@ -2039,7 +2045,6 @@ function Modules.Tween:ToTarget(targetCFrame, options)
     -- Only stop if not continuous
     if not TweenStateManager:ShouldContinue(tweenId) then
         State.isTweening = false
-        Modules.Hover:SetNoClip(false)
         LoopDetector:UnregisterLoop(tweenId)
     end
     
@@ -2469,6 +2474,13 @@ end
 
 function Modules:IsTweening()
     return State.isTweening or TweenStateManager:HasContinuousTweens()
+end
+
+function Modules:WaitForTweenEnd()
+    while self:IsTweening() do
+        task.wait()
+    end
+    return true
 end
 
 function Modules:GetTweenStates()
