@@ -1,7 +1,7 @@
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/SansYT789/Library/refs/heads/main/SaveManager.luau"))()
 local Modules = {}
 Modules.__index = Modules
-Modules.Version = "1.2"
+Modules.Version = "1.3"
 
 -- Service caching
 local Services = {
@@ -170,6 +170,18 @@ local State = {
     boatHoverClips = {},
     tweenCooldown = 0,
     boatOriginalCollision = {},
+    tweenStates = {},
+    continuousTweens = {},
+    tweenQueue = {},
+    loopDetection = {
+        history = {},
+        active = {}
+    },
+    performance = {
+        tweenCount = 0,
+        avgTweenTime = 0,
+        lastFrameTime = tick()
+    }
 }
 
 -- Remote setup
@@ -489,7 +501,7 @@ function Modules:UpdatePlayerESP()
 
                 local line1 = player.Name
                 if Config.Esp.Players.ShowDistance then
-                    line1 = line1 .. "(" .. distance .. "M)"
+                    line1 = line1 .. " (" .. distance .. "M)"
                 end
                 
                 if Config.Esp.Players.ShowHealth and cacheData.humanoid then
@@ -1393,22 +1405,27 @@ end
 
 function TweenStateManager:Get(tweenId)
     if not tweenId then return nil end
+    if not State.tweenStates then return nil end
     return State.tweenStates[tweenId]
 end
 
 function TweenStateManager:IsActive(tweenId)
     if not tweenId then return false end
+    if not State.tweenStates then return false end
     local state = State.tweenStates[tweenId]
     return state and state.active or false
 end
 
 function TweenStateManager:Stop(tweenId, silent)
     if not tweenId then return end
+    if not State.tweenStates then return end
     local state = State.tweenStates[tweenId]
     if not state then return end
     
     state.active = false
-    State.continuousTweens[tweenId] = nil
+    if State.continuousTweens then
+        State.continuousTweens[tweenId] = nil
+    end
     
     if not silent and state.stopCallback then
         pcall(state.stopCallback)
@@ -1918,6 +1935,10 @@ function Modules.Tween:ToTarget(targetCFrame, options)
         local CHECK_INTERVAL = Config.Performance.updateInterval
         
         while State.isTweening and TweenStateManager:IsActive(tweenId) do
+            if not State.tweenStates or not State.tweenStates[tweenId] then
+                break
+            end
+
             local now = tick()
             
             -- Throttle checks
