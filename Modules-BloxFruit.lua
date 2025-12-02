@@ -1539,6 +1539,57 @@ function Modules:GetBoatSpeed()
     return math.clamp(Config.Tween.defaultBoatTweenSpeed, 50, 300)
 end
 
+local function Modules:GetMobSpawnPoints(name, originPos)
+    local folder = workspace._WorldOrigin.EnemySpawns
+    local spawns = {}
+    local nearest = nil
+    local nearestDist = math.huge
+
+    for _, obj in ipairs(folder:GetChildren()) do
+        if string.find(obj.Name, name) then
+            local part
+
+            if obj.CFrame then
+                part = obj
+            elseif obj:IsA("Model") and obj.PrimaryPart then
+                part = obj.PrimaryPart
+            else
+                part = obj:FindFirstChildWhichIsA("BasePart")
+            end
+
+            if part then
+                local dist = (part.Position - originPos).Magnitude
+                
+                -- find nearest
+                if dist < nearestDist then
+                    nearestDist = dist
+                    nearest = {object = obj, part = part, dist = dist}
+                end
+
+                -- add to general list
+                table.insert(spawns, {object = obj, part = part, dist = dist})
+            end
+        end
+    end
+
+    if not nearest then
+        return {}
+    end
+
+    -- Move nearest to the top of the list
+    -- (delete from old list and insert again first)
+    for i, v in ipairs(spawns) do
+        if v.object == nearest.object then
+            table.remove(spawns, i)
+            break
+        end
+    end
+
+    table.insert(spawns, 1, nearest)
+
+    return spawns
+end
+
 Modules.Hover = {
     _originalCollisions = {}
 }
