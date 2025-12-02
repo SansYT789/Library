@@ -1539,17 +1539,27 @@ function Modules:GetBoatSpeed()
     return math.clamp(Config.Tween.defaultBoatTweenSpeed, 50, 300)
 end
 
-local function Modules:GetMobSpawnPoints(name, originPos)
-    local folder = workspace._WorldOrigin.EnemySpawns
+function Modules:GetMobSpawnPoints(name, originPos)
+    -- Validate input
+    if type(name) ~= "string" or name == "" then return {} end
+    if typeof(originPos) ~= "Vector3" then return {} end
+
+    local worldOrigin = Services.Workspace:FindFirstChild("_WorldOrigin")
+    if not worldOrigin then return {} end
+
+    local enemySpawns = worldOrigin:FindFirstChild("EnemySpawns")
+    if not enemySpawns then return {} end
+
     local spawns = {}
     local nearest = nil
     local nearestDist = math.huge
 
-    for _, obj in ipairs(folder:GetChildren()) do
-        if string.find(obj.Name, name) then
-            local part
+    for _, obj in ipairs(enemySpawns:GetChildren()) do
+        if type(obj.Name) == "string" and string.find(obj.Name, name) then
+            local part = nil
 
-            if obj.CFrame then
+            -- Determine part for position reference
+            if obj:IsA("BasePart") then
                 part = obj
             elseif obj:IsA("Model") and obj.PrimaryPart then
                 part = obj.PrimaryPart
@@ -1557,34 +1567,35 @@ local function Modules:GetMobSpawnPoints(name, originPos)
                 part = obj:FindFirstChildWhichIsA("BasePart")
             end
 
-            if part then
+            if part and part:IsA("BasePart") then
                 local dist = (part.Position - originPos).Magnitude
-                
-                -- find nearest
+
+                -- Track nearest spawn point
                 if dist < nearestDist then
                     nearestDist = dist
                     nearest = {object = obj, part = part, dist = dist}
                 end
 
-                -- add to general list
+                -- Add to full list
                 table.insert(spawns, {object = obj, part = part, dist = dist})
+            else
+                warn("GetMobSpawnPoints: Could not find a BasePart for spawn '" .. obj.Name .. "'")
             end
         end
     end
 
     if not nearest then
+        -- No spawn found matching name
         return {}
     end
 
-    -- Move nearest to the top of the list
-    -- (delete from old list and insert again first)
+    -- Move nearest to top of list
     for i, v in ipairs(spawns) do
         if v.object == nearest.object then
             table.remove(spawns, i)
             break
         end
     end
-
     table.insert(spawns, 1, nearest)
 
     return spawns
