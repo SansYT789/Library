@@ -759,7 +759,7 @@ local function normalizeIdValue(idValue)
     return assetId and ("rbxassetid://" .. assetId) or nil
 end
 
-local function getAccurateFruitNameCached(v)
+function Modules:GetAccurateFruitName(v)
     local cached = FruitCache.NameCache[v]
     if cached then return cached end
     
@@ -836,9 +836,9 @@ function Modules:UpdateDevilFruitESP()
     FruitCache.LastUpdate = currentTime
 
     local char = getPlayerCharacter()
-    if not char or not char:FindFirstChild("Head") then return end
+    if not char then return end
     
-    local charHeadPos = char.Head.Position
+    local bodyPos = char:FindFirstChild("Head") or HRP
     local showId = Config.Esp.DevilFruits.ShowUnkDevilFruitId
     
     -- Get workspace children once
@@ -860,9 +860,9 @@ function Modules:UpdateDevilFruitESP()
             end
 
             -- Fast distance check
-            local dist = getDistance(charHeadPos, handle.Position)
+            local dist = getDistance(bodyPos, handle.Position)
 
-            if not isWithinMaxDistance(charHeadPos, handle.Position) then
+            if not isWithinMaxDistance(bodyPos, handle.Position) then
                 destroyESP(handle, "NameEspFruit")
                 FruitCache.Fruits[v] = nil
                 return
@@ -872,7 +872,7 @@ function Modules:UpdateDevilFruitESP()
             local name = cachedData and cachedData.name
             
             if not name or (showId and not name:find("%[")) then
-                name = showId and getAccurateFruitNameCached(v) or v.Name
+                name = showId and self:GetAccurateFruitName(v) or v.Name
             end
 
             -- Update cache
