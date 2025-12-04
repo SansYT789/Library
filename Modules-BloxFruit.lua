@@ -932,7 +932,6 @@ local function getLocationsFolder()
     
     return IslandCache.LocationsFolder
 end
-
 -- Initialize lookups
 buildExcludeLookup()
 buildEventIslandLookup()
@@ -1027,7 +1026,6 @@ local function buildNPCTargetLookup()
         NPCCache.TargetSet[name] = true
     end
 end
-
 buildNPCTargetLookup()
 
 function Modules:UpdateNPCESP()
@@ -1617,7 +1615,7 @@ function Modules.Hover:Ensure()
 
     State.hoverClip = Instance.new("BodyVelocity")
     State.hoverClip.Name = "VinreachHoverClip"
-    State.hoverClip.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+    State.hoverClip.MaxForce = Vector3.new(100000, 100000, 100000)
     State.hoverClip.Velocity = Vector3.new(0, 0, 0)
     State.hoverClip.P = 5000
     State.hoverClip.Parent = HRP
@@ -1716,7 +1714,7 @@ function Modules:ManageBoatHover(boat, enabled)
             bv = Instance.new("BodyVelocity")
             bv.Name = "boatHoverTweenVin"
             bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-            bv.Velocity = Vector3.zero
+            bv.Velocity = Vector3.new(0, 0, 0)
             bv.Parent = vehicleSeat
             State.boatHoverClips[boat] = bv
         end
@@ -1762,23 +1760,7 @@ function Modules:ManageBoatHover(boat, enabled)
     end
 end
 
-local lastHoverUpdate = 0
-local HOVER_UPDATE_INTERVAL = 0.05 -- 20 FPS is enough for hover
 Services.RunService.Heartbeat:Connect(function()
-    local now = tick()
-    
-    -- Throttle updates
-    if (now - lastHoverUpdate) < HOVER_UPDATE_INTERVAL then
-        return
-    end
-    lastHoverUpdate = now
-    
-    -- Player hover
-    if State.hoverClip and State.hoverClip.Parent then
-        State.hoverClip.Velocity = Vector3.zero
-    end
-    
-    -- Boat hover (only if needed)
     if not State.isTweening and not Modules.CheckInMyBoat() then
         -- Cleanup all boat hovers when not needed
         for boat, bv in pairs(State.boatHoverClips) do
@@ -1792,7 +1774,7 @@ Services.RunService.Heartbeat:Connect(function()
     if myBoat and State.boatHoverClips[myBoat] then
         local bv = State.boatHoverClips[myBoat]
         if bv and bv.Parent then
-            bv.Velocity = Vector3.zero
+            bv.Velocity = Vector3.new(0, 0, 0)
         end
     end
 end)
@@ -1944,7 +1926,7 @@ function Modules.Tween:ToTarget(targetCFrame, options)
 
     Modules.Hover:SetNoClip(true)
     
-    -- OPTIMIZED: Unified connection management
+    -- Unified connection management
     local connections = {}
     local cleanupPerformed = false
     
@@ -1997,7 +1979,7 @@ function Modules.Tween:ToTarget(targetCFrame, options)
     end)
     table.insert(connections, velocityControl)
 
-    -- OPTIMIZED: Monitor task with better exit conditions
+    -- Monitor task with better exit conditions
     local monitorTask = task.spawn(function()
         local lastCheck = tick()
         local CHECK_INTERVAL = Config.Performance.updateInterval
@@ -2446,8 +2428,6 @@ function Modules:Initialize()
 
     _G.ModulesInitialized = true
     _G.ModulesVersion = Modules.Version
-    
-    print("✓ Modules v" .. Modules.Version .. " initialized successfully")
     return true
 end
 
@@ -2531,14 +2511,16 @@ function Modules:BoatTween(input, autoManage)
 end
 
 function Modules:StopTween(stopMovement)
+    if not State.isInitialized then return end
     Modules.Tween:StopAll(stopMovement)
 end
 
 function Modules:IsTweening()
-    return State.isTweening or TweenStateManager:HasContinuousTweens()
+    return State.isInitialized and (State.isTweening or TweenStateManager:HasContinuousTweens())
 end
 
 function Modules:WaitForTweenEnd()
+    if not State.isInitialized then return false end
     while self:IsTweening() do
         task.wait()
     end
@@ -2722,6 +2704,7 @@ end
 
 -- Start initialization
 AutoInitialize()
+print("✓ Modules v" .. Modules.Version .. " initialized successfully")
 
 -- Global access
 _G.Modules = Modules
