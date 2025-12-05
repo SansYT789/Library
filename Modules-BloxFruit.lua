@@ -95,6 +95,7 @@ local Config = {
                 Apple = Color3.fromRGB(255, 0, 0),
                 Pineapple = Color3.fromRGB(255, 174, 0),
                 Banana = Color3.fromRGB(251, 255, 0),
+                Fruit = Color3.fromRGB(255, 0, 0),
             },
         },
 
@@ -501,7 +502,7 @@ function Modules:UpdatePlayerESP()
 
                 local line1 = player.Name
                 if Config.Esp.Players.ShowDistance then
-                    line1 = line1 .. " (" .. distance .. "M)"
+                    line1 = line1 .. " [" .. distance .. "M]"
                 end
                 
                 if Config.Esp.Players.ShowHealth and cacheData.humanoid then
@@ -509,13 +510,13 @@ function Modules:UpdatePlayerESP()
                     local health = cacheData.humanoid.Health
                     if maxHealth and maxHealth > 0 then
                         if health <= 0 then
-                            line1 = line1 .. " | Death!"
+                            line1 = line1 .. " | Death"
                         else
                             local healthPercent = math.floor(health * 100 / maxHealth)
                             line1 = line1 .. " | HP: " .. healthPercent .. "%"
                         end
                     else
-                        line1 = line1 .. " | Death!"
+                        line1 = line1 .. " | HP: Inf"
                     end
                 end
                 table.insert(textLines, line1)
@@ -525,7 +526,7 @@ function Modules:UpdatePlayerESP()
                     if Config.Esp.Players.ShowKen then
                         local kenActive = player:GetAttribute("KenActive")
                         local dodgeLeft = player:GetAttribute("KenDodgesLeft") or 0
-                        local kenLine = (kenActive and "Ken: ON" or "Ken: OFF") .. " | DodgeLeft: " .. dodgeLeft
+                        local kenLine = (kenActive and "Observation Haki: ON" or "Observation Haki: OFF") .. " | DodgeLeft: " .. dodgeLeft
                         table.insert(textLines, kenLine)
                     end
                     
@@ -597,12 +598,12 @@ function Modules:UpdateChestESP()
             updateOrCreateESP(chest, "NameEspChest", function(label, isNew)
                 local distance = dist
                 
-                local chestType = chest.Name:match("Chest3") and "Diamond" or
+                local chestName = chest.Name:match("Chest3") and "Diamond" or
                                  chest.Name:match("Chest2") and "Gold" or
                                  chest.Name:match("Chest1") and "Silver" or "Default"
 
-                label.TextColor3 = Config.Esp.Chests.Colors[chestType]
-                label.Text = chest.Name:gsub("Label", "") .. "\n" .. distance .. "M"
+                label.TextColor3 = Config.Esp.Chests.Colors[chestName]
+                label.Text = chestName .. " Chest [" .. distance .. "M]"
             end)
         end)
     end
@@ -731,7 +732,7 @@ function Modules:UpdateBerryESP()
                 local colorData = Config.Esp.Berries.Colors[berryName]
 
                 label.TextColor3 = colorData[1]
-                label.Text = string.format("[%s]\n%dM", colorData[2], distance)
+                label.Text = string.format("%s [%dM]", colorData[2], distance)
             end)
         end)
     end
@@ -763,7 +764,7 @@ function Modules:GetAccurateFruitName(v)
     local cached = FruitCache.NameCache[v]
     if cached then return cached end
     
-    if not v then return "Fruit [ ??? ]" end
+    if not v then return "Blox Fruit [ ??? ]" end
 
     local clean = v.Name:lower():gsub("%s+", "")
     if isValidFruitName(v.Name) and clean ~= "fruit" then 
@@ -810,7 +811,7 @@ function Modules:GetAccurateFruitName(v)
     end
 
     local nameId = realFruitNameIds[normalized]
-    local result = nameId and (v.Name .. "[ " .. nameId .. " ]") or "Fruit [ ??? ]"
+    local result = nameId and (v.Name .. "[ " .. nameId .. " ]") or v.Name .. " [ ??? ]"
     
     FruitCache.NameCache[v] = result
     return result
@@ -836,9 +837,9 @@ function Modules:UpdateDevilFruitESP()
     FruitCache.LastUpdate = currentTime
 
     local char = getPlayerCharacter()
-    if not char then return end
+    if not char or not char:FindFirstChild("Head") then return end
     
-    local bodyPos = char:FindFirstChild("Head") or HRP
+    local bodyPos = char.Head.Position
     local showId = Config.Esp.DevilFruits.ShowUnkDevilFruitId
     
     -- Get workspace children once
@@ -859,10 +860,7 @@ function Modules:UpdateDevilFruitESP()
                 if not handle then return end
             end
 
-            -- Fast distance check
-            local dist = getDistance(bodyPos, handle.Position)
-
-            if not isWithinMaxDistance(bodyPos, handle.Position) then
+            if not isWithinMaxDistance(charHeadPos, handle.Position) then
                 destroyESP(handle, "NameEspFruit")
                 FruitCache.Fruits[v] = nil
                 return
@@ -884,9 +882,9 @@ function Modules:UpdateDevilFruitESP()
 
             -- Update ESP
             updateOrCreateESP(handle, "NameEspFruit", function(label, isNew)
-                local distance = dist
+                local distance = getDistance(charHeadPos, handle.Position)
                 label.TextColor3 = Config.Esp.DevilFruits.Color
-                label.Text = name .. "\n" .. distance .. "M"
+                label.Text = name .. " [" .. distance .. "M]"
             end)
         end)
     end
@@ -972,7 +970,7 @@ function Modules:UpdateIslandESP()
             updateOrCreateESP(island, "NameEspIsland", function(label, isNew)
                 local distance = getDistance(charHeadPos, island.Position)
                 label.TextColor3 = Config.Esp.Islands.Color
-                label.Text = island.Name .. "\n" .. distance .. "M"
+                label.Text = island.Name .. " [" .. distance .. "M]"
             end)
         end)
     end
@@ -1014,7 +1012,7 @@ function Modules:UpdateEventIslandESP()
             updateOrCreateESP(island, "NameEspEvent", function(label, isNew)
                 local distance = getDistance(charHeadPos, island.Position)
                 label.TextColor3 = color
-                label.Text = island.Name .. "\n" .. distance .. "M"
+                label.Text = island.Name .. " [" .. distance .. "M]"
             end)
         end)
     end
@@ -1071,7 +1069,7 @@ function Modules:UpdateNPCESP()
             updateOrCreateESP(npc, "NameEspNPC", function(label, isNew)
                 local distance = dist
                 label.TextColor3 = Config.Esp.NPCs.Color
-                label.Text = npc.Name .. "\n" .. distance .. "M"
+                label.Text = npc.Name .. " [" .. distance .. "M]"
             end)
         end)
     end
@@ -1110,11 +1108,11 @@ function Modules:UpdateRealFruitESP()
     local activeFruits = {}
     
     -- Search in Map folder
-    local map = Services.Workspace:FindFirstChild("Map")
+    local map = Services.Workspace
     if not map then return end
 
     for _, obj in ipairs(map:GetDescendants()) do
-        if obj:IsA("Model") and (obj.Name == "AppleSpawner" or obj.Name == "PineappleSpawner" or obj.Name == "BananaSpawner") then
+        if obj.Name == "AppleSpawner" or obj.Name == "PineappleSpawner" or obj.Name == "BananaSpawner" then
             local part = obj:FindFirstChildWhichIsA("BasePart")
             if not part then continue end
             
@@ -1126,10 +1124,14 @@ function Modules:UpdateRealFruitESP()
             pcall(function()
                 updateOrCreateESP(part, "NameEspRealFruit", function(label, isNew)
                     local distance = dist
-                    local color = Config.Esp.RealFruits.Colors[obj.Name]
+                    local fruitName = obj.Name:match("AppleSpawner") and "Apple" or
+                                 obj.Name:match("PineappleSpawner") and "Pineapple" or
+                                 obj.Name:match("BananaSpawner") and "Banana" or "Fruit"
+                    
+                    local color = Config.Esp.RealFruits.Colors[fruitName]
                     
                     label.TextColor3 = color or Color3.fromRGB(255, 255, 255)
-                    label.Text = obj.Name .. "\n" .. distance .. "M"
+                    label.Text = fruitName .. " [" .. distance .. "M]"
                 end)
             end)
         end
@@ -1185,7 +1187,7 @@ function Modules:UpdateFlowerESP()
                     local colorData = Config.Esp.Flowers.Colors[obj.Name]
                     
                     label.TextColor3 = colorData[1]
-                    label.Text = colorData[2] .. "\n" .. distance .. "M"
+                    label.Text = colorData[2] .. " [" .. distance .. "M]"
                 end)
             end)
         end
@@ -1223,14 +1225,17 @@ function Modules:UpdateGearESP()
     
     local charHeadPos = char.Head.Position
     local activeGears = {}
+    
+    local map = Services.Workspace:FindFirstChild("Map")
+    if not map then return end
 
-    local mirageIsland = Services.Workspace.Map:FindFirstChild("MysticIsland")
+    local mirageIsland = map:FindFirstChild("MysticIsland")
     if not mirageIsland then return end
     
     -- Search in Workspace
     for _, obj in ipairs(mirageIsland:GetChildren()) do
-        if v:IsA("MeshPart") and v.Material ==  Enum.Material.Neon then
-            local part = obj:FindFirstChildWhichIsA("BasePart")
+        if obj:IsA("MeshPart") and obj.Material ==  Enum.Material.Neon then
+            local part = obj
             if not part then continue end
             
             local dist = getDistance(charHeadPos, part.Position)
@@ -1243,7 +1248,7 @@ function Modules:UpdateGearESP()
                     local distance = dist
                     
                     label.TextColor3 = Config.Esp.Gear.Color
-                    label.Text = obj.Name .. "\n" .. distance .. "M"
+                    label.Text = obj.Name .. " [" .. distance .. "M]"
                 end)
             end)
         end
