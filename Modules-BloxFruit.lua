@@ -526,7 +526,7 @@ function Modules:UpdatePlayerESP()
                     if Config.Esp.Players.ShowKen then
                         local kenActive = player:GetAttribute("KenActive")
                         local dodgeLeft = player:GetAttribute("KenDodgesLeft") or 0
-                        local kenLine = (kenActive and "Observation Haki: ON" or "Observation Haki: OFF") .. " | DodgeLeft: " .. dodgeLeft
+                        local kenLine = (kenActive and "Ken: ON" or "Ken: OFF") .. " | DodgeLeft: " .. dodgeLeft
                         table.insert(textLines, kenLine)
                     end
                     
@@ -1328,8 +1328,6 @@ function Modules:StartESP()
             self:UpdateGearESP()
         end
     end)
-    
-    print("✓ ESP Started")
 end
 
 function Modules:StopESP()
@@ -1337,7 +1335,6 @@ function Modules:StopESP()
         self.UpdateConnection:Disconnect()
         self.UpdateConnection = nil
     end
-    print("ESP Stopped")
 end
 
 function Modules:SetESPConfig(category, key, value)
@@ -2709,7 +2706,7 @@ end
 
 -- Start initialization
 AutoInitialize()
-print("✓ Modules v" .. Modules.Version .. " initialized successfully")
+print("Modules v" .. Modules.Version .. " initialized successfully")
 
 -- Global access
 _G.Modules = Modules
